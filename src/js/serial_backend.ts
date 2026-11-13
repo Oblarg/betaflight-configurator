@@ -61,8 +61,10 @@ import {
     DEFAULT_ALLOWED_TABS,
     DEFAULT_ALLOWED_TABS_WHEN_DISCONNECTED,
     DEFAULT_CLOUD_BUILD_TAB_OPTIONS,
+    WHIPPYFLIGHT_TAB,
     useNavigationStore,
 } from "../stores/navigation";
+import { useWhippyFlightStore } from "../stores/whippyflight";
 
 type ReadInfo = Parameters<typeof MSP.read>[0];
 
@@ -1232,12 +1234,26 @@ function finishOpen() {
         useNavigationStore().allowedTabs = [...DEFAULT_ALLOWED_FC_TABS_WHEN_CONNECTED];
     }
 
+    void allowWhippyFlightTab();
+
     onConnect();
 
     // Readiness edge #1: full MSP chain complete -> CONNECTED (FULLY_READY).
     getConnectionState().setPhase(ConnPhase.CONNECTED);
 
     selectDefaultTabWhenConnected();
+}
+
+/**
+ * The WhippyFlight tab tunes from logs with any flight controller, or none; probing tells it
+ * whether this one can also take the gains.
+ */
+async function allowWhippyFlightTab() {
+    const navigationStore = useNavigationStore();
+    if (!navigationStore.allowedTabs.includes(WHIPPYFLIGHT_TAB)) {
+        navigationStore.allowedTabs = [...navigationStore.allowedTabs, WHIPPYFLIGHT_TAB];
+    }
+    await useWhippyFlightStore().probe();
 }
 
 function connectCli() {

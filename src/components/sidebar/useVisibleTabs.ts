@@ -26,6 +26,7 @@ import { useAuthStore } from "@/stores/auth";
 import { useFlightControllerStore } from "@/stores/fc";
 import type { BetaflightModel } from "../init";
 import { useNavigationStore } from "@/stores/navigation";
+import { isTauriDesktop } from "@/js/utils/checkCompatibility";
 
 type SidebarItem = (typeof sidebarItems)[number];
 
@@ -65,6 +66,7 @@ export function useVisibleTabs(): ComputedRef<SidebarItem[]> {
         const model = betaflightModel ?? globalThis.vm;
         return {
             expertMode: Boolean(model?.expertMode),
+            desktop: isTauriDesktop(),
             config: fcStore.config,
             features: fcStore.features?.features,
         };

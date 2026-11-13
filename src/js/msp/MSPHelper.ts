@@ -27,6 +27,7 @@ import semver from "semver";
 import vtxDeviceStatusFactory from "../utils/VtxDeviceStatus/VtxDeviceStatusFactory";
 import MSP from "../msp";
 import MSPCodes, { MSP2TextType } from "./MSPCodes";
+import WhippyFlightCodes from "./WhippyFlightCodes";
 import { MspCrcError } from "./mspErrors";
 import { MspBuffer, MspDataView } from "./mspBytes";
 import {
@@ -826,7 +827,11 @@ class MspHelper {
 // A decoder returns this when the frame only partly answers its requests, so they stay pending.
 const KEEP_PENDING = "keep-pending";
 
-const PROBE_CODES = new Set<number>([MSPCodes.MSP2_CLI_SETTING, MSPCodes.MSP2_CLI_SETTING_INFO]);
+const PROBE_CODES = new Set<number>([
+    MSPCodes.MSP2_CLI_SETTING,
+    MSPCodes.MSP2_CLI_SETTING_INFO,
+    WhippyFlightCodes.MSP2_WHIPPYFLIGHT_STATUS,
+]);
 
 type Decoder = (this: MspHelper, data: MspDataView, dataHandler: MspFrame) => void | typeof KEEP_PENDING;
 type Encoder = (this: MspHelper, buffer: MspBuffer, modifierCode: number | undefined) => void;
@@ -2551,6 +2556,14 @@ const DECODERS: Partial<Record<number, Decoder>> = {
     [MSPCodes.MSP2_CLI_SETTING]: NOTHING_TO_DO,
 
     [MSPCodes.MSP2_CLI_SETTING_INFO]: NOTHING_TO_DO,
+
+    // WhippyFlight replies are decoded by the whippyflight store; STATUS doubles as the probe
+    // for WhippyFlight firmware, which upstream builds answer as unsupported.
+    [WhippyFlightCodes.MSP2_WHIPPYFLIGHT_STATUS]: NOTHING_TO_DO,
+    [WhippyFlightCodes.MSP2_WHIPPYFLIGHT_UPLOAD_BEGIN]: NOTHING_TO_DO,
+    [WhippyFlightCodes.MSP2_WHIPPYFLIGHT_UPLOAD_DATA]: NOTHING_TO_DO,
+    [WhippyFlightCodes.MSP2_WHIPPYFLIGHT_UPLOAD_COMMIT]: NOTHING_TO_DO,
+    [WhippyFlightCodes.MSP2_WHIPPYFLIGHT_UPLOAD_ABORT]: NOTHING_TO_DO,
 };
 
 // One encoder per MSP request code that carries a payload; crunch dispatches here.

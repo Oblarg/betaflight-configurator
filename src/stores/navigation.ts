@@ -33,6 +33,7 @@ export const DEFAULT_ALLOWED_TABS_WHEN_DISCONNECTED: readonly string[] = [
     "flight_plan",
     "autotune",
     "blackbox_viewer",
+    "whippyflight",
 ];
 
 /** Tabs every connected flight controller gets. */
@@ -66,6 +67,9 @@ export const DEFAULT_CLOUD_BUILD_TAB_OPTIONS: readonly string[] = [
     "vtx",
     "flight_plan",
 ];
+
+/** Allowed with any flight controller, or none: it can work from imported logs alone. */
+export const WHIPPYFLIGHT_TAB = "whippyflight";
 
 /** Every flight controller tab, for firmware that does not report its build options. */
 export const DEFAULT_ALLOWED_FC_TABS_WHEN_CONNECTED: readonly string[] = [

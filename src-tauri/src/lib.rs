@@ -1,5 +1,6 @@
 mod mdns;
 mod tcp;
+mod whippyflight;
 
 // Native BLE covers macOS, whose webview (WKWebView) has no Web Bluetooth. Linux and Windows
 // keep the webview's own Web Bluetooth, which also keeps btleplug's libdbus/WinRT paths out of
@@ -76,6 +77,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .manage(tcp::TcpState::default())
         .manage(mdns::MdnsState::default())
+        .manage(whippyflight::WhippyFlightState::default())
         .setup(|app| Ok(build_main_window(app)?));
 
     // Registering blec is what populates the handler its Rust API resolves; the ble_* commands
@@ -92,14 +94,40 @@ pub fn run() {
             ble::ble_scan,
             ble::ble_connect,
             ble::ble_send,
-            ble::ble_disconnect
+            ble::ble_disconnect,
+            whippyflight::whippyflight_check_env,
+            whippyflight::whippyflight_run,
+            whippyflight::whippyflight_cancel,
+            whippyflight::whippyflight_workspace,
+            whippyflight::whippyflight_read,
+            whippyflight::whippyflight_write,
+            whippyflight::whippyflight_delete_log,
+            whippyflight::whippyflight_delete_fit,
+            whippyflight::whippyflight_import,
+            whippyflight::whippyflight_flicks,
+            whippyflight::whippyflight_front,
+            whippyflight::whippyflight_use_front,
+            whippyflight::whippyflight_reveal
         ]);
     #[cfg(not(target_os = "macos"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         tcp::tcp_connect,
         tcp::tcp_send,
         tcp::tcp_disconnect,
-        mdns::mdns_browse
+        mdns::mdns_browse,
+        whippyflight::whippyflight_check_env,
+        whippyflight::whippyflight_run,
+        whippyflight::whippyflight_cancel,
+        whippyflight::whippyflight_workspace,
+        whippyflight::whippyflight_read,
+        whippyflight::whippyflight_write,
+        whippyflight::whippyflight_delete_log,
+        whippyflight::whippyflight_delete_fit,
+        whippyflight::whippyflight_import,
+        whippyflight::whippyflight_flicks,
+        whippyflight::whippyflight_front,
+        whippyflight::whippyflight_use_front,
+        whippyflight::whippyflight_reveal
     ]);
 
     builder

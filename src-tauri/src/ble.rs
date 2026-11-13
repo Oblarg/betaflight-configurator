@@ -18,7 +18,7 @@ use tokio::sync::Mutex as TokioMutex;
 use uuid::Uuid;
 
 use tauri_plugin_blec::models::{BleDevice, CharProps, ScanFilter, Service, WriteType};
-use tauri_plugin_blec::{get_handler, OnDisconnectHandler};
+use tauri_plugin_blec::{OnDisconnectHandler, get_handler};
 
 /// How long a scan runs before returning the peripherals seen so far. BLE
 /// advertisements arrive every few hundred ms, so a couple of seconds catches
@@ -126,7 +126,10 @@ struct MatchedProfile {
 /// the connected peripheral. Order matters: the JS table lists device variants
 /// most-specific first, which is what lets a family like SpeedyBee fall through
 /// to the profile it actually implements.
-fn match_descriptor(services: &[Service], descriptors: &[BleDeviceDescriptor]) -> Option<MatchedProfile> {
+fn match_descriptor(
+    services: &[Service],
+    descriptors: &[BleDeviceDescriptor],
+) -> Option<MatchedProfile> {
     for descriptor in descriptors {
         let (Ok(service_uuid), Ok(write_uuid), Ok(read_uuid)) = (
             Uuid::parse_str(&descriptor.service_uuid),
@@ -139,7 +142,11 @@ fn match_descriptor(services: &[Service], descriptors: &[BleDeviceDescriptor]) -
         let Some(service) = services.iter().find(|s| s.uuid == service_uuid) else {
             continue;
         };
-        let Some(write) = service.characteristics.iter().find(|c| c.uuid == write_uuid) else {
+        let Some(write) = service
+            .characteristics
+            .iter()
+            .find(|c| c.uuid == write_uuid)
+        else {
             continue;
         };
         if !service.characteristics.iter().any(|c| c.uuid == read_uuid) {
@@ -166,7 +173,11 @@ fn match_descriptor(services: &[Service], descriptors: &[BleDeviceDescriptor]) -
 
 /// Reports the link dropping, unless a later connect or disconnect superseded this
 /// attempt. `OnDisconnectHandler` is a one-shot, so each connect needs a fresh one.
-fn disconnect_emitter(app: AppHandle, generation: Arc<AtomicU64>, my_generation: u64) -> OnDisconnectHandler {
+fn disconnect_emitter(
+    app: AppHandle,
+    generation: Arc<AtomicU64>,
+    my_generation: u64,
+) -> OnDisconnectHandler {
     OnDisconnectHandler::from_sync(move || {
         if generation.load(Ordering::SeqCst) == my_generation {
             let _ = app.emit("ble-disconnected", ());
@@ -260,7 +271,12 @@ pub async fn ble_send(state: State<'_, BleState>, data: Vec<u8>) -> Result<(), S
 
     get_handler()
         .map_err(|e| e.to_string())?
-        .send_data(target.characteristic, Some(target.service), &data, target.write_type)
+        .send_data(
+            target.characteristic,
+            Some(target.service),
+            &data,
+            target.write_type,
+        )
         .await
         .map_err(|e| e.to_string())
 }

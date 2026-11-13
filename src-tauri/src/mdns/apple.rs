@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::{is_link_local, Bridge, SERVICE_TYPE};
+use super::{Bridge, SERVICE_TYPE, is_link_local};
 
 /// A service that never answers must not wedge the browse thread.
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -347,7 +347,8 @@ fn addresses_of(host: &str, interface_index: u32) -> Vec<String> {
     if out.found.is_empty() {
         return vec![host.to_string()];
     }
-    out.found.sort_by_key(|address| (address.is_ipv6(), *address));
+    out.found
+        .sort_by_key(|address| (address.is_ipv6(), *address));
     out.found.dedup();
     out.found.iter().map(ToString::to_string).collect()
 }

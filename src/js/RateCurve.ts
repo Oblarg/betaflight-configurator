@@ -19,7 +19,7 @@
  * If not, see <http://www.gnu.org/licenses/>.
  */
 
-import { RATES_TYPE, useFlightControllerStore } from "../stores/fc";
+import { RATES_TYPE, useFlightControllerStore, type FcState } from "../stores/fc";
 
 const minRc = 1000;
 const midRc = 1500;
@@ -63,6 +63,25 @@ function hasRates(params: MaybeRateCurveParams): params is RateCurveParams {
 
 export type RateCurveAxis = "roll" | "pitch" | "yaw";
 
+/** The rate settings a curve is computed from, as MSP_RC_TUNING and MSP_RC_DEADBAND deliver them. */
+export type RateProfile = Pick<
+    FcState["rcTuning"],
+    | "RC_RATE"
+    | "RC_EXPO"
+    | "roll_rate"
+    | "pitch_rate"
+    | "yaw_rate"
+    | "RC_YAW_EXPO"
+    | "rcYawRate"
+    | "rcPitchRate"
+    | "RC_PITCH_EXPO"
+    | "roll_rate_limit"
+    | "pitch_rate_limit"
+    | "yaw_rate_limit"
+    | "rates_type"
+> &
+    Pick<FcState["rcDeadbandConfig"], "deadband" | "yaw_deadband">;
+
 /** Pick one axis out of a rates snapshot. Yaw is the odd one out: it has its own deadband. */
 export function axisRateCurveParams(rates: CurrentRates, axis: RateCurveAxis): RateCurveParams {
     switch (axis) {
@@ -100,14 +119,22 @@ export default class RateCurve {
     useLegacyCurve: boolean;
     maxAngularVel: number | null = null;
 
-    constructor(useLegacyCurve: boolean) {
+    /** Rates other than the connected flight controller's, such as a blackbox log header's. */
+    profile: RateProfile | null;
+
+    constructor(useLegacyCurve: boolean, profile: RateProfile | null = null) {
         this.useLegacyCurve = useLegacyCurve;
+        this.profile = profile;
     }
 
     // Resolved per access, never cached in the instance: a RateCurve can outlive the Pinia that was active when it was built
     // (tests install a fresh one per case).
     private get fcStore() {
         return useFlightControllerStore();
+    }
+
+    private get ratesType(): number {
+        return (this.profile ?? this.fcStore.rcTuning).rates_type;
     }
 
     constrain(value: number, min: number, max: number): number {
@@ -275,8 +302,8 @@ export default class RateCurve {
     }
 
     getCurrentRates(): CurrentRates {
-        const tuning = this.fcStore.rcTuning;
-        const deadbandConfig = this.fcStore.rcDeadbandConfig;
+        const tuning = this.profile ?? this.fcStore.rcTuning;
+        const deadbandConfig = this.profile ?? this.fcStore.rcDeadbandConfig;
 
         const currentRates: CurrentRates = {
             roll_rate: tuning.roll_rate,
@@ -345,7 +372,7 @@ export default class RateCurve {
 
             const rcCommandfAbs = Math.abs(rcCommandf);
 
-            switch (this.fcStore.rcTuning.rates_type) {
+            switch (this.ratesType) {
                 case RATES_TYPE.RACEFLIGHT:
                     angleRate = this.getRaceflightRates(rcCommandf, rate, rcRate, rcExpo);
 

@@ -50,7 +50,9 @@ pub async fn tcp_connect(
     // stall an async runtime worker either. Without both this and `async fn` above, a bad
     // manual IP froze the whole window for as long as the OS took to give up.
     let connected = tauri::async_runtime::spawn_blocking(move || -> Result<TcpStream, String> {
-        let addrs = (ip.as_str(), port).to_socket_addrs().map_err(|e| e.to_string())?;
+        let addrs = (ip.as_str(), port)
+            .to_socket_addrs()
+            .map_err(|e| e.to_string())?;
         let deadline = Instant::now() + CONNECT_TIMEOUT;
         // Stays at this default only if `addrs` was empty (resolved to zero addresses);
         // the deadline can't already be exhausted at the first iteration since it was

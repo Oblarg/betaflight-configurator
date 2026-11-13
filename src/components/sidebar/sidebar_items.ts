@@ -39,11 +39,14 @@ export interface SidebarItem {
     buildOptions?: string[];
     /** Shown when this firmware feature is enabled. */
     feature?: string;
+    /** Only in the desktop app, which runs local tools. */
+    desktopOnly?: boolean;
     hideInSidebar?: boolean;
 }
 
 export interface SidebarVisibilityContext {
     expertMode: boolean;
+    desktop?: boolean;
     config?: BuildOptionsConfig | null;
     features?: { isEnabled?: (featureName: string) => boolean } | null;
 }
@@ -90,6 +93,8 @@ export const sidebarItems: SidebarItem[] = [
     { key: "onboard_logging", mode: "connected", i18n: "tabOnboardLogging", icon: "i-lucide-database" },
     { key: "blackbox_viewer", mode: "shared", i18n: "tabBlackboxViewer", icon: "i-lucide-line-chart" },
     { key: "autotune", mode: "shared", i18n: "tabAutotune", icon: "i-lucide-gauge", expert: true },
+    // Works from imported logs alone; a connected WhippyFlight FC adds log pulls and the upload.
+    { key: "whippyflight", mode: "shared", i18n: "tabWhippyFlight", icon: "i-lucide-activity", desktopOnly: true },
 
     { key: "cli", mode: "cli", i18n: "tabCLI", icon: "i-lucide-terminal" },
 
@@ -101,6 +106,9 @@ export const sidebarItems: SidebarItem[] = [
 
 export function isItemVisible(item: SidebarItem, ctx: SidebarVisibilityContext): boolean {
     if (item.expert && !ctx.expertMode) {
+        return false;
+    }
+    if (item.desktopOnly && !ctx.desktop) {
         return false;
     }
     if (item.buildOptions && !item.buildOptions.some((o) => configHasBuildOption(ctx.config, o))) {

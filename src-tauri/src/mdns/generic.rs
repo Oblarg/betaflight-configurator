@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use mdns_sd::{Receiver, ResolvedService, ServiceDaemon, ServiceEvent, TryRecvError};
 
-use super::{is_link_local, Bridge, SERVICE_TYPE};
+use super::{Bridge, SERVICE_TYPE, is_link_local};
 
 // The bridge's records carry a 120 s TTL and it does not answer the daemon's known-answer
 // refresh queries, so a single long-lived browse expires the bridge after two minutes. A
@@ -70,7 +70,10 @@ impl Browser {
 }
 
 /// Applies every event queued on `events`, stopping at the first that is not there.
-fn drain(found: &mut BTreeMap<String, Bridge>, events: &Receiver<ServiceEvent>) -> Result<(), TryRecvError> {
+fn drain(
+    found: &mut BTreeMap<String, Bridge>,
+    events: &Receiver<ServiceEvent>,
+) -> Result<(), TryRecvError> {
     loop {
         match events.try_recv() {
             Ok(event) => apply(found, event),

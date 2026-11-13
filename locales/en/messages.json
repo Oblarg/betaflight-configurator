@@ -535,6 +535,371 @@
         "message": "PID Tuning"
     },
     "tabAutotune": { "message": "Autotune" },
+    "tabWhippyFlight": { "message": "WhippyFlight" },
+    "whippyflightFlightController": { "message": "Flight controller" },
+    "whippyflightNoStatus": {
+        "message": "This flight controller isn't running WhippyFlight: you can still tune from logs, but not upload the gains."
+    },
+    "whippyflightOffline": {
+        "message": "No flight controller connected: tuning from imported logs, at the loop rate and stick rates they were recorded with. Connect a WhippyFlight flight controller to download logs and upload gains."
+    },
+    "whippyflightImportHint": { "message": "Blackbox logs from this drone, or one you know to be comparable." },
+    "whippyflightImportLogs": { "message": "Import logs…" },
+    "whippyflightImportDump": { "message": "Import CLI dump…" },
+    "whippyflightBusy_import": { "message": "Importing logs…" },
+    "whippyflightGains": { "message": "Gains" },
+    "whippyflightSource": { "message": "Loaded from" },
+    "whippyflightLoopRate": { "message": "Loop rate" },
+    "whippyflightGainsFor": { "message": "gains for {{rate}}" },
+    "whippyflightArming": { "message": "Arming" },
+    "whippyflightArmingReady": { "message": "Allowed" },
+    "whippyflightBlob": { "message": "Loaded blob" },
+    "whippyflightGainStore": { "message": "Dataflash gain store" },
+    "whippyflightNone": { "message": "None" },
+    "whippyflightEnabled": { "message": "Fly with WhippyFlight" },
+    "whippyflightEnabledHint": {
+        "message": "Off flies Betaflight's own PID controller and mixer, with this board's PID profile. The board picks its controller when it boots, so changing this reboots it; the gains stay stored either way."
+    },
+    "whippyflightMotorSmoothing": { "message": "Motor-speed smoothing" },
+    "whippyflightMotorSmoothingHint": {
+        "message": "Low-pass cutoff on the ESC-reported motor speeds the controller schedules its gains on (0 turns it off). Lower cutoffs pass less telemetry jitter to the motors, which smooths flight most at low throttle; 30–50 Hz suits a whoop. This is separate from Betaflight's rpm_filter_lpf_hz, which only feeds the RPM notch filters. Blackbox logs record it, and fits made from them simulate flicks with it."
+    },
+    "whippyflightStickTracking": { "message": "Stick tracking (λ)" },
+    "whippyflightStickTrackingHint": {
+        "message": "Stick smoothing between radio packets. Lower filters out radio jitter; below 1 suits cinematic flying, at a few ms of lag. Higher follows each packet, but rings on sudden jumps and is barely quicker above 8. Stick speed is capped separately, by what the fitted model can follow. Default 8."
+    },
+    "whippyflightIdleSpeed": { "message": "Idle speed" },
+    "whippyflightIdleSpeedHint": {
+        "message": "The slowest WhippyFlight lets a motor spin in flight, in mechanical revolutions per second; it never commands less than the voltage that holds it. It is also the lowest speed the gains are scheduled at. Off (0) leaves it at the bottom of the gain table, which applies anyway when higher. Separate from Betaflight's dyn_idle_min_rpm, whose idle controller does not run under WhippyFlight."
+    },
+    "whippyflightMotorPoles": { "message": "Motor poles" },
+    "whippyflightMotorPolesHint": {
+        "message": "motor_poles: magnets in the motor bell (12 or 14 on most whoop motors, 14 on 5\"). Converts the ESCs' electrical RPM to the shaft speed the gains are scheduled on. Fits take it from the logs, so it must match the count the gains were fitted with. Takes effect after a reboot."
+    },
+    "whippyflightLogTelemetry": { "message": "Log telemetry" },
+    "whippyflightLogTelemetryHint": {
+        "message": "Records the controller's setpoint estimate, feedforward target and voltage, and command scale in the blackbox debug fields (debug_mode WHIPPYFLIGHT). Takes effect after a reboot."
+    },
+    "whippyflightLogTelemetryReplaces": {
+        "message": "Replaces debug_mode {{mode}}."
+    },
+    "whippyflightLogAccel": { "message": "Log accelerometer" },
+    "whippyflightLogAccelHint": {
+        "message": "Fits need it to model the airframe's drag; without it the drag terms are left out."
+    },
+    "whippyflightChecksTitle": { "message": "Before WhippyFlight will arm" },
+    "whippyflightCheck_GAINS": { "message": "No valid gains are loaded: upload gains below." },
+    "whippyflightCheck_LOOP_RATE": {
+        "message": "The PID loop runs at {{pid}}, but the gains were computed for {{gains}}."
+    },
+    "whippyflightCheck_RPM_TELEMETRY": {
+        "message": "No ESC RPM telemetry: WhippyFlight schedules its gains on measured motor speed, which needs bidirectional DShot."
+    },
+    "whippyflightCheck_SELF_LEVEL": {
+        "message": "A self-levelling mode (angle, horizon, alt hold, position hold, GPS rescue or acro trainer) is on a switch; WhippyFlight only flies acro, so remove it in the Modes tab."
+    },
+    "whippyflightCheck_FAILSAFE": {
+        "message": "failsafe_procedure is not DROP: the other failsafe procedures fly in angle mode."
+    },
+    "whippyflightFix": { "message": "Set {{change}}" },
+    "whippyflightFixReboot": { "message": "Set {{change}} and reboot" },
+    "whippyflightOff": { "message": "off" },
+    "whippyflightSaveSettings": { "message": "Save" },
+    "whippyflightSaveReboot": { "message": "Save and reboot" },
+    "whippyflightInactive": {
+        "message": "WhippyFlight is off on this boot: the quad flies Betaflight's PID controller, and the gains below are stored but unused."
+    },
+    "whippyflightArmingInactive": { "message": "Betaflight PID (WhippyFlight off)" },
+    "whippyflightNoSettings": {
+        "message": "This firmware predates the WhippyFlight settings (or has no CLI); flash a newer build to change them here."
+    },
+    "whippyflightSdCardWins": {
+        "message": "These gains came from the SD card, which takes priority over the dataflash at boot. Gains uploaded here are only used once WHIPPY.WFG is removed from the card."
+    },
+    "whippyflightDesktopOnly": {
+        "message": "The regression and gain computation run Python on this computer, which needs the Betaflight desktop app."
+    },
+    "whippyflightStepSetup": { "message": "1. Setup" },
+    "whippyflightStepLogs": { "message": "2. Flight logs" },
+    "whippyflightStepFit": { "message": "3. Regression" },
+    "whippyflightStepGains": { "message": "4. Gains" },
+    "whippyflightStepUpload": { "message": "5. Upload" },
+    "whippyflightPython": { "message": "Python" },
+    "whippyflightToolsDir": { "message": "WhippyFlight tools" },
+    "whippyflightWorkdir": { "message": "Working directory" },
+    "whippyflightChoose": { "message": "Choose…" },
+    "whippyflightPythonFound": { "message": "Python {{version}} with the required packages." },
+    "whippyflightPythonMissing": { "message": "Python could not be started." },
+    "whippyflightModulesMissing": { "message": "Missing Python packages: {{modules}}" },
+    "whippyflightScriptsMissing": { "message": "Not in the tools directory: {{scripts}}" },
+    "whippyflightNoMatplotlib": {
+        "message": "matplotlib is not installed, so plots can't be saved as images; the charts below still work."
+    },
+    "whippyflightFlashUsed": { "message": "{{size}} of logs on the flight controller" },
+    "whippyflightDownloadLogs": { "message": "Download logs" },
+    "whippyflightEraseLogs": { "message": "Erase logs on FC" },
+    "whippyflightDeleteLog": { "message": "Delete log" },
+    "whippyflightSelectedFlights": { "message": "{{selected}} of {{usable}} usable flights selected" },
+    "whippyflightSelectAll": { "message": "All" },
+    "whippyflightSelectLatest": { "message": "Latest only" },
+    "whippyflightSelectNone": { "message": "None" },
+    "whippyflightNotScanned": { "message": "Not read yet: its flights are listed once the Python setup is complete." },
+    "whippyflightScanFailed": { "message": "Could not read this log: {{error}}" },
+    "whippyflightAirborne": { "message": "{{kept}} / {{duration}} s airborne" },
+    "whippyflightExcited": { "message": "Excited:" },
+    "whippyflightImpacts": { "message": "{{count}} impact(s)" },
+    "whippyflightFitAlone": { "message": "Fit this flight alone" },
+    "whippyflightShortLogsHidden": { "message": "{{count}} log(s) under 10 s (armed without flying) not listed" },
+    "whippyflightNoLogs": {
+        "message": "No logs in the working directory yet. Fly the test flights, then download the logs, or import logs you already have."
+    },
+    "whippyflightNoDump": {
+        "message": "No CLI dump saved yet; it is fetched with the logs (or import one) and lets the regression check the motor layout."
+    },
+    "whippyflightDrag": { "message": "Airframe drag" },
+    "whippyflightDrag_auto": { "message": "Auto" },
+    "whippyflightDrag_on": { "message": "On" },
+    "whippyflightDrag_off": { "message": "Off" },
+    "whippyflightSavePlots": { "message": "Save plots" },
+    "whippyflightSavePlotsHint": {
+        "message": "Write these plots as PNG images into the working directory, and open it."
+    },
+    "whippyflightBusy_plots": { "message": "Saving plots…" },
+    "whippyflightRunFit": { "message": "Fit {{count}} together" },
+    "whippyflightRunFitEach": { "message": "Fit each separately" },
+    "whippyflightFits": { "message": "Fits: pick one to inspect it. Gains are computed from the highlighted fit." },
+    "whippyflightPreviousFit": { "message": "Previous fit" },
+    "whippyflightNextFit": { "message": "Next fit" },
+    "whippyflightFitFlights": { "message": "Flights" },
+    "whippyflightFitUsed": { "message": "Used" },
+    "whippyflightFitHasGains": { "message": "gains" },
+    "whippyflightFitFailed": { "message": "Failed; see the output below." },
+    "whippyflightDeleteFit": { "message": "Delete fit" },
+    "whippyflightFitColumns": { "message": "Axis columns are held-out R² ({{method}})." },
+    "whippyflightFitAndMore": { "message": "{{named}} and {{count}} more" },
+    "whippyflightDragForced": { "message": "drag {{mode}}" },
+    "whippyflightNoWarnings": { "message": "Nothing looks wrong with this fit." },
+    "whippyflightAxis": { "message": "Axis" },
+    "whippyflightAxis_yaw": { "message": "Yaw" },
+    "whippyflightAxis_pitch": { "message": "Pitch" },
+    "whippyflightAxis_roll": { "message": "Roll" },
+    "whippyflightAxis_motors": { "message": "Motors" },
+    "whippyflightHeldOutR2": { "message": "Held-out R² ({{method}})" },
+    "whippyflightResidual": { "message": "Residual σ / signal σ" },
+    "whippyflightRows": { "message": "Rows" },
+    "whippyflightChartExcerpt": { "message": "Most excited {{seconds}} s of {{flight}}" },
+    "whippyflightChartExcerptWindow": { "message": "Most excited window of {{flight}}" },
+    "whippyflightExcerptSeconds": { "message": "s (gaps: samples left out of the fit)" },
+    "whippyflightChartScatter": { "message": "Predicted against measured" },
+    "whippyflightChartResiduals": { "message": "Residuals" },
+    "whippyflightFlickTime": { "message": "ms from stick start" },
+    "whippyflightFlickOnset": { "message": "Onset" },
+    "whippyflightFlickRelease": { "message": "Release" },
+    "whippyflightMeasured": { "message": "Measured" },
+    "whippyflightPredicted": { "message": "Predicted" },
+    "whippyflightMeasuredUnit": { "message": "Measured ({{unit}})" },
+    "whippyflightResidualUnit": { "message": "Residual ({{unit}})" },
+    "whippyflightFlights": { "message": "Flights ({{kept}} s used)" },
+    "whippyflightFlight": { "message": "Flight" },
+    "whippyflightKept": { "message": "Used" },
+    "whippyflightPairing": { "message": "Motor pairing" },
+    "whippyflightWarning_low_r2": {
+        "message": "{{axis}} is poorly explained by the model (R² {{value}}, want at least {{limit}})."
+    },
+    "whippyflightWarning_overfit": {
+        "message": "{{axis}} predicts unseen data much worse than the data it was fitted on (R² {{r2}}, held out {{heldout_r2}}): fly more of that axis."
+    },
+    "whippyflightWarning_uncertain_coefficient": {
+        "message": "{{axis}} {{name}} is uncertain (±{{rel_se}}%, want under {{limit}}%)."
+    },
+    "whippyflightWarning_pairing_mismatch": {
+        "message": "{{flight}}: {{axes}} is best explained by a different motor pairing; check the motor order."
+    },
+    "whippyflightWarning_little_data": {
+        "message": "Only {{kept_s}} s of usable flight; aim for at least {{limit}} s."
+    },
+    "whippyflightNoGainsYet": { "message": "No gains computed yet." },
+    "whippyflightGrid": { "message": "Grid" },
+    "whippyflightGridPoints": { "message": "{{n}} per motor ({{points}})" },
+    "whippyflightGridHint": {
+        "message": "Motor speeds the gains are scheduled over, per motor. 4 is finer but makes a blob about half again larger; the flight controller's gain store fits up to 4."
+    },
+    "whippyflightGridHintIdle": {
+        "message": "Motor speeds the gains are scheduled over, per motor, starting at the {{idle}} rev/s idle speed. 4 is finer but makes a blob about half again larger; the flight controller's gain store fits up to 4."
+    },
+    "whippyflightGridBelowIdle": {
+        "message": "These gains' grid starts at {{min}} rev/s, below the {{idle}} rev/s idle speed, where the motors never run. Compute them again to spend the grid above idle."
+    },
+    "whippyflightGridResolutionDiffers": {
+        "message": "These gains have {{gains}} grid speeds per motor; the grid setting is {{now}}. Compute them again to use it."
+    },
+    "whippyflightRunGains": { "message": "Compute gains" },
+    "whippyflightRunGainsFc": { "message": "For {{rate}}, the flight controller's loop rate" },
+    "whippyflightRunGainsLog": { "message": "For {{rate}}, the loop rate recorded in the logs" },
+    "whippyflightDtMismatch": {
+        "message": "These gains are for a different loop rate than the flight controller's PID loop; WhippyFlight will refuse to arm with them. Compute them again."
+    },
+    "whippyflightGainsOnFc": { "message": "These gains are stored on the flight controller and loaded." },
+    "whippyflightWriting": { "message": "Writing the gains to dataflash…" },
+    "whippyflightUploadHint": {
+        "message": "Uploading validates the gains on the flight controller, then stores them in dataflash."
+    },
+    "whippyflightUpload": { "message": "Upload gains" },
+    "whippyflightOutput": { "message": "Script output" },
+    "whippyflightCancel": { "message": "Cancel" },
+    "whippyflightBusy_pull": { "message": "Downloading logs…" },
+    "whippyflightBusy_erase": { "message": "Erasing logs…" },
+    "whippyflightBusy_fit": { "message": "Running the regression…" },
+    "whippyflightBusy_gen": { "message": "Computing gains…" },
+    "whippyflightBusy_upload": { "message": "Uploading gains…" },
+    "whippyflightBusy_flicks": { "message": "Flying the gains through stick flicks…" },
+    "whippyflightRunFlicks": { "message": "Fly stick flicks" },
+    "whippyflightRerunFlicks": { "message": "Fly flicks again at λ {{lambda}}" },
+    "whippyflightFlickStickTracking": { "message": "Stick tracking λ" },
+    "whippyflightFlickStickTrackingFc": { "message": "(controller settings)" },
+    "whippyflightFlickStickTrackingLog": { "message": "(from the logs)" },
+    "whippyflightFlickStickTrackingHint": {
+        "message": "The stick tracking these flicks were flown with: the controller settings' value as entered (saved or not) when connected, else the one the logs were flown with."
+    },
+    "whippyflightFlickDefaultRates": {
+        "message": "Flown at Betaflight's default 670°/s: neither a connected flight controller nor the logs gave max rates."
+    },
+    "whippyflightFlickTitle": { "message": "{{axis}}, full stick ({{dps}}°/s)" },
+    "whippyflightFlickAxis": { "message": "Flick" },
+    "whippyflightFlickTargetLag": { "message": "Target behind stick" },
+    "whippyflightFlickControllerLag": { "message": "Gyro behind target" },
+    "whippyflightFlickStick": { "message": "Stick" },
+    "whippyflightFlickTarget": { "message": "Feedforward target" },
+    "whippyflightFlickResponse": { "message": "Response" },
+    "whippyflightFlickSaturated": { "message": "Motors saturated" },
+    "whippyflightFlickOvershoot": { "message": "Overshoot" },
+    "whippyflightFlickRise90": { "message": "To 90%" },
+    "whippyflightFlickHoldErr": { "message": "Hold error" },
+    "whippyflightFlickSaturation": { "message": "Saturated" },
+    "whippyflightFlickRoughness": { "message": "Motor roughness" },
+    "whippyflightFlickMotors": { "message": "Motor voltage (V)" },
+    "whippyflightFlickMotor": { "message": "Motor {{n}}" },
+    "whippyflightFlickRoughnessNote": {
+        "message": "Motor roughness in the table is what the fit's logged gyro and motor-speed noise adds to the motor voltages during each flick (RMS above 50 Hz, mean over motors). It grows with how far the flick drives the motors from hover, most of it from motor-speed noise. Hover roughness is the same measure at hover with no stick."
+    },
+    "whippyflightFlickMargin": { "message": "Delay margin" },
+    "whippyflightFlickMarginNone": { "message": "none" },
+    "whippyflightFlickMarginHint": {
+        "message": "How much gyro delay the gains tolerate on top of the fit's filters before a roll flick stops settling cleanly (up to {{max}} ms checked). Low margin is fragile to a slower gyro filter or loop jitter."
+    },
+    "whippyflightFlickTrim": { "message": "5% CG shift" },
+    "whippyflightFlickTrimHint": {
+        "message": "The attitude a 5% CG shift costs at hover before the integral takes up its torque."
+    },
+    "whippyflightWeightResponse": { "message": "Disturbance response" },
+    "whippyflightWeightResponseHint": {
+        "message": "Stiffer rejects knocks and gusts faster but carries more gyro noise to the motors, and loses delay margin; smoother is quieter but slower to recover. Stick response is set by feedforward and barely changes."
+    },
+    "whippyflightWeightStiff": { "message": "Stiff" },
+    "whippyflightWeightSmooth": { "message": "Smooth" },
+    "whippyflightWeightIntegral": { "message": "Attitude hold" },
+    "whippyflightWeightIntegralHint": {
+        "message": "Firmer holds attitude more closely against a CG shift or a bent prop, at the cost of delay margin."
+    },
+    "whippyflightWeightFirm": { "message": "Firm" },
+    "whippyflightWeightLoose": { "message": "Loose" },
+    "whippyflightWeightsAdvanced": { "message": "Advanced" },
+    "whippyflightWeightsReset": { "message": "Defaults" },
+    "whippyflightWeightsChanged": { "message": "Changed since these gains were computed; Compute gains to apply." },
+    "whippyflightWeightsAdvancedHint": {
+        "message": "The LQR cost weights: how far each state may stray before it costs as much as a volt of motor command. Smaller holds that state harder. Rate barely matters; the sliders set the other two."
+    },
+    "whippyflightSigmaRate": { "message": "σ rate, rot/s" },
+    "whippyflightSigmaDeriv": { "message": "σ derivative, rot/s²" },
+    "whippyflightSigmaInt": { "message": "σ integral, rot/s" },
+    "whippyflightExploreFront": { "message": "Explore tradeoffs" },
+    "whippyflightExploreFrontHint": {
+        "message": "Compute gains at a grid of tuning weights and fly each on the fit's plant, to pick from what they trade. Takes several seconds."
+    },
+    "whippyflightBusy_front": { "message": "Exploring tradeoffs…" },
+    "whippyflightFrontResponse": { "message": "Knock recovery vs motor roughness" },
+    "whippyflightFrontHold": { "message": "CG-shift hold vs delay margin" },
+    "whippyflightFrontBetterLowerLeft": { "message": "better ↙" },
+    "whippyflightFrontBetterUpperLeft": { "message": "better ↖" },
+    "whippyflightFrontKick": { "message": "Knock recovery" },
+    "whippyflightFrontRough": { "message": "Hover roughness" },
+    "whippyflightFrontMargin": { "message": "Delay margin" },
+    "whippyflightFrontTrim": { "message": "5% CG shift" },
+    "whippyflightFrontClick": { "message": "click to use these gains" },
+    "whippyflightFrontNote": {
+        "message": "Each of the {{n}} points is a set of gains, flown on the fit's plant. Knock recovery is how long a 0.2 rot/s roll knock at hover takes to die out (∫|rate| ÷ knock); hover roughness is what the logs' sensor noise adds to the motor voltages; delay margin and CG shift are as for the flicks. Filled points are each chart's Pareto front: no other point is better on both of its axes. Lines join equal attitude-hold weights on the left and equal stiffness on the right. Red: under {{low}} ms of delay margin. Ringed: the current gains."
+    },
+    "whippyflightFrontStaleLoop": {
+        "message": "This front was computed for {{front}}; gains would now be computed for {{now}}. Explore again before picking."
+    },
+    "whippyflightFrontStaleRate": {
+        "message": "This front was computed with σ rate {{front}}, not the advanced setting's. Explore again, or picking a point sets it back."
+    },
+    "whippyflightFrontStaleGrid": {
+        "message": "This front was computed over a grid of {{front}} speeds per motor from {{frontIdle}} rev/s idle, not {{now}} from {{nowIdle}}. Explore again."
+    },
+    "whippyflightFrontStaleGridUnknown": {
+        "message": "This front predates recording its speed grid, so it may not match the gains Compute gains would make. Explore again."
+    },
+    "whippyflightFrontNoFilters": {
+        "message": "The fit's gyro filters aren't modeled, so these are measured without them; the delay margins are optimistic."
+    },
+    "whippyflightFlickHoverRough": { "message": "Hover roughness" },
+    "whippyflightFlickBfRough": { "message": "(Betaflight {{bf}})" },
+    "whippyflightFlickHoverRoughHint": {
+        "message": "What the logged sensor noise adds to the motor voltages with these gains at hover. Betaflight's figure is all the ripple in its own motor outputs over the same stretch of log: its response to real turbulence and vibration as well as noise, so it's what is known to fly rather than a like-for-like figure."
+    },
+    "whippyflightFlickNoNoise": {
+        "message": "No motor roughness: the sensor noise couldn't be extracted from the fit's logs (see the script output)."
+    },
+    "whippyflightFlickNote": {
+        "message": "Flown by the WhippyFlight controller itself on the plant fitted in {{fit}}, from hover, with the motor smoothing and idle speed the logs were flown with, and the stick tracking set in the controller settings (else the logs'). Each axis flicks to full stick at the fastest raised-cosine rise the target's slew and jerk limits allow, so the stick is as aggressive as the target can follow. Each flick is flown with and without the stick and the response is the difference. Lags are at half the flick; the target's is the smoother's, set by what the motors can deliver, and the gyro's behind the target is the controller's own."
+    },
+    "whippyflightBusy_scan": { "message": "Reading the flights in the logs…" },
+    "whippyflightNoFitChosen": { "message": "Choose a fit to compute gains from." },
+    "whippyflightGainsFromOtherFit": {
+        "message": "These gains were computed from another fit ({{fit}}). Compute them again to use the highlighted one."
+    },
+    "whippyflightGainsFromUnknownFit": {
+        "message": "Which fit these gains came from isn't recorded. Compute them again."
+    },
+    "whippyflightScriptFailed": { "message": "The script failed (exit code {{code}}): {{detail}}" },
+    "whippyflightNoLoopRate": {
+        "message": "No PID loop rate to compute gains for: connect the flight controller, or fit logs whose header records it."
+    },
+    "whippyflightNoGains": { "message": "No gains to upload." },
+    "whippyflightBlob_too_short": { "message": "The gain file is truncated." },
+    "whippyflightBlob_bad_magic": { "message": "The gain file is not a WhippyFlight gain blob." },
+    "whippyflightBlob_bad_size": { "message": "The gain file's size does not match its header." },
+    "whippyflightBlob_bad_checksum": { "message": "The gain file is corrupt (checksum mismatch)." },
+    "whippyflightGain_OK": { "message": "Loaded" },
+    "whippyflightGain_TOO_SHORT": { "message": "Blob truncated" },
+    "whippyflightGain_BAD_MAGIC": { "message": "No gains stored" },
+    "whippyflightGain_BAD_CHECKSUM": { "message": "Checksum mismatch" },
+    "whippyflightGain_BAD_VERSION": { "message": "Blob version not supported by this firmware" },
+    "whippyflightGain_RES_TOO_LARGE": { "message": "Gain grid too large for this firmware" },
+    "whippyflightGain_MISALIGNED": { "message": "Blob layout invalid" },
+    "whippyflightGain_TOO_LARGE": { "message": "Blob larger than the gain store" },
+    "whippyflightGain_NO_STORE": { "message": "No gain store" },
+    "whippyflightSource_NONE": { "message": "Nothing" },
+    "whippyflightSource_SDCARD": { "message": "SD card" },
+    "whippyflightSource_DATAFLASH": { "message": "Dataflash" },
+    "whippyflightUpload_OK": { "message": "Stored." },
+    "whippyflightUpload_ARMED": { "message": "Disarm before uploading gains." },
+    "whippyflightUpload_NO_STORE": { "message": "This flight controller has no dataflash gain store." },
+    "whippyflightUpload_TOO_LARGE": { "message": "The gains are larger than the flight controller's gain store." },
+    "whippyflightUpload_BUSY": {
+        "message": "Blackbox is using the dataflash; stop logging (blackbox_mode) and try again."
+    },
+    "whippyflightUpload_NOT_STARTED": { "message": "The flight controller lost the upload; try again." },
+    "whippyflightUpload_OUT_OF_ORDER": { "message": "The upload got out of step; try again." },
+    "whippyflightUpload_INCOMPLETE": { "message": "The upload was incomplete; try again." },
+    "whippyflightUpload_REJECTED": {
+        "message": "The flight controller rejected the gains and kept its previous ones:"
+    },
+    "whippyflightUpload_VERIFY_FAILED": {
+        "message": "The dataflash did not read back as written. The new gains are loaded until the next reboot only."
+    },
     "tabBlackboxViewer": {
         "message": "Blackbox Viewer",
         "description": "Navigation sidebar label for the Blackbox log viewer tab"
