@@ -51,7 +51,13 @@ import {
     type Job,
     type Toolchain,
 } from "@/js/whippyflight/pipeline";
-import { logMaxRatesRps, maxRatesRps, type MaxRates, type RatesSource } from "@/js/whippyflight/flicks";
+import {
+    logMaxRatesRps,
+    maxRatesRps,
+    type FlickRatesSource,
+    type MaxRates,
+    type RatesSource,
+} from "@/js/whippyflight/flicks";
 import { frontWeights } from "@/js/whippyflight/front";
 import RateCurve from "@/js/RateCurve";
 import { fitId, listFlights, specOfLabel, unscannedLogs, type Flight } from "@/js/whippyflight/flights";
@@ -103,7 +109,6 @@ export interface WhippyFlightPipeline {
     /** Logs not scanned yet (new, or changed since). */
     unscanned: ComputedRef<string[]>;
     chooseWorkdir: () => Promise<void>;
-    chooseToolsDir: () => Promise<void>;
     checkEnvironment: () => Promise<void>;
     refreshWorkspace: () => Promise<void>;
     refreshFlash: () => Promise<void>;
@@ -167,11 +172,9 @@ export function useWhippyFlightPipeline(): WhippyFlightPipeline {
         }
     });
 
-    const toolchain = (): Toolchain => ({ python: store.settings.python, toolsDir: store.settings.toolsDir });
+    const toolchain = (): Toolchain => ({ python: store.settings.python });
 
-    const toolchainReady = computed(
-        () => !!store.env?.pythonVersion && !store.env.missingModules.length && !store.env.missingScripts.length,
-    );
+    const toolchainReady = computed(() => !!store.env?.pythonVersion && !store.env.missingModules.length);
 
     const flashUsed = computed(() => fcStore.dataflash?.usedSize ?? 0);
 
@@ -315,15 +318,6 @@ export function useWhippyFlightPipeline(): WhippyFlightPipeline {
         }
     }
 
-    async function chooseToolsDir(): Promise<void> {
-        const dir = await pickWorkdir(store.settings.toolsDir || undefined);
-        if (dir) {
-            store.settings.toolsDir = dir;
-            await checkEnvironment();
-            await scanLogs();
-        }
-    }
-
     async function refreshFlash(): Promise<void> {
         await MSP.promise(MSPCodes.MSP_DATAFLASH_SUMMARY).catch(() => undefined);
     }
@@ -379,7 +373,13 @@ export function useWhippyFlightPipeline(): WhippyFlightPipeline {
         const code = await runJob(toolchain(), store.settings.workdir, job, store.appendOutput);
         if (code !== 0) {
             const last = store.output.filter((line) => line.stderr).at(-1)?.line;
-            throw new Error(i18n.getMessage("whippyflightScriptFailed", { code, detail: last ?? "" }));
+            throw new Error(
+                i18n.getMessage("whippyflightScriptFailed", {
+                    code,
+                    detail: last ?? "",
+                    interpolation: { escapeValue: false },
+                }),
+            );
         }
     }
 
@@ -532,8 +532,15 @@ export function useWhippyFlightPipeline(): WhippyFlightPipeline {
         });
     }
 
-    /** Full-stick rates: the connected FC's, else those of the logs the gains' fit came from. */
-    async function maxRates(): Promise<{ rps: MaxRates; from: RatesSource } | null> {
+    /**
+     * The flicks' rates: those set by hand, else the full-stick rates of the connected FC, else
+     * those of the logs the gains' fit came from.
+     */
+    async function maxRates(): Promise<{ rps: MaxRates; from: FlickRatesSource } | null> {
+        const manual = store.settings.flickRates;
+        if (manual) {
+            return { rps: [...manual] as MaxRates, from: "manual" };
+        }
         if (connectionStore.connectionValid) {
             await MSP.promise(MSPCodes.MSP_RC_TUNING);
             return { rps: maxRatesRps(new RateCurve(false)), from: "fc" };
@@ -561,7 +568,15 @@ export function useWhippyFlightPipeline(): WhippyFlightPipeline {
     async function simulateFlicks(): Promise<void> {
         await extractNoise(store.workspace?.gainsFit);
         const rates = await maxRates();
-        store.flicks = await flyFlicks(store.settings.workdir, rates, store.stickTracking);
+        store.flicks = await flyFlicks(
+            store.settings.workdir,
+            rates,
+            store.stickTracking,
+            store.motorLpfHz,
+            store.settings.flickRiseMs,
+            store.settings.flickFeedback,
+            store.settings.flickConditions,
+        );
         await refreshWorkspace();
     }
 
@@ -619,7 +634,6 @@ export function useWhippyFlightPipeline(): WhippyFlightPipeline {
         flights,
         unscanned,
         chooseWorkdir,
-        chooseToolsDir,
         checkEnvironment,
         refreshWorkspace,
         refreshFlash,

@@ -42,8 +42,9 @@ tauri-plugin-fs = "2"
 
 # The WhippyFlight controller and its nonlinear plant, to fly computed gains through
 # stick flicks before they are uploaded (src/whippyflight.rs). A path dependency on a
-# whippyflight-bf checkout next to this one, until the crate is published.
-whippyflight-control = { path = "../../whippyflight-bf/src/main/flight/whippyflight", features = ["sim"] }
+# whippyflight checkout next to this one, until the crates are published.
+whippyflight-control = { path = "../../whippyflight/crates/whippyflight-control", features = ["std"] }
+whippyflight-sim = { path = "../../whippyflight/crates/whippyflight-sim" }
 whippyunits = "0.3.5"
 
 # Browses the bridge's `_betaflight._tcp` mDNS service so bridges appear in the connect list
@@ -69,6 +70,8 @@ tokio = { version = "1", features = ["sync", "time"] }
 # The flick simulation runs the controller and plant for tens of thousands of ticks; with
 # these optimized it takes about a tenth of a second in a dev build too.
 [profile.dev.package.whippyflight-control]
+opt-level = 3
+[profile.dev.package.whippyflight-sim]
 opt-level = 3
 [profile.dev.package.whippyunits]
 opt-level = 3

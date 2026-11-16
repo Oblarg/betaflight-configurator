@@ -1,14 +1,14 @@
 //! WhippyFlight tuning pipeline for the WhippyFlight tab.
 //!
-//! The regression (`fit_model.py`) and gain computation (`gen_wfg.py`) are
-//! Python scripts run under a user-chosen interpreter from a user-chosen tools
-//! directory. The webview never supplies a command line: it names a job and
+//! The regression, noise and log tools (`whippyflight_betaflight.*`) and the
+//! gain computation (`whippyflight.gen_wfg`) are modules of the whippyflight
+//! packages installed in the user-chosen interpreter. The webview never supplies a command line: it names a job and
 //! its typed parameters, and the arguments are built here. Every file the
 //! pipeline reads or writes sits at a fixed path inside one working directory:
 //!
 //! ```text
 //! <workdir>/logs/*.bbl          flight logs pulled from the FC
-//! <workdir>/flights.json        the flights in each log (`fit_model.py flights`)
+//! <workdir>/flights.json        the flights in each log (`fit_model flights`)
 //! <workdir>/cli_dump.txt        `dump`, for fit_model's motor-layout check
 //! <workdir>/fits/<fit>/         one fit per selection of flights:
 //!     coefficients.json, diagnostics.json, plots/*.png, noise.bin, and
@@ -32,9 +32,87 @@ use std::time::UNIX_EPOCH;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, Emitter, State};
+use whippyflight_sim::units::{AngAccel, Freq, Millis, Rate, Time, Voltage};
+use whippyunits::api::rescale;
+use whippyunits::{qty, quantity, value};
 
-const FIT_SCRIPT: &str = "fit_model.py";
-const GEN_SCRIPT: &str = "gen_wfg.py";
+type AngJerk = qty!(rot / s ^ 3);
+type Degrees = qty!(deg);
+/// Traces are sent as f32.
+type RateF32 = qty!(rot / s, f32);
+type VoltageF32 = qty!(V, f32);
+
+/// Quantities in JSON as plain numbers (`#[serde(with = "plain")]`), each in
+/// its field type's own unit, so the webview and the Python tools read and
+/// write bare numbers.
+mod plain {
+    use serde::de::{DeserializeOwned, Error};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use whippyunits::Quantity;
+
+    pub trait Plain: Sized {
+        type Raw: Serialize + DeserializeOwned;
+        fn to_raw(&self) -> Self::Raw;
+        fn from_raw(raw: Self::Raw) -> Result<Self, String>;
+    }
+
+    impl<U: Clone, T: Copy + Serialize + DeserializeOwned, B: Clone> Plain for Quantity<U, T, B> {
+        type Raw = T;
+        fn to_raw(&self) -> T {
+            self.unsafe_value
+        }
+        fn from_raw(raw: T) -> Result<Self, String> {
+            Ok(*Self::from_ref(&raw))
+        }
+    }
+
+    impl<P: Plain> Plain for Option<P> {
+        type Raw = Option<P::Raw>;
+        fn to_raw(&self) -> Self::Raw {
+            self.as_ref().map(P::to_raw)
+        }
+        fn from_raw(raw: Self::Raw) -> Result<Self, String> {
+            raw.map(P::from_raw).transpose()
+        }
+    }
+
+    impl<P: Plain> Plain for Vec<P> {
+        type Raw = Vec<P::Raw>;
+        fn to_raw(&self) -> Self::Raw {
+            self.iter().map(P::to_raw).collect()
+        }
+        fn from_raw(raw: Self::Raw) -> Result<Self, String> {
+            raw.into_iter().map(P::from_raw).collect()
+        }
+    }
+
+    impl<P: Plain, const N: usize> Plain for [P; N] {
+        type Raw = Vec<P::Raw>;
+        fn to_raw(&self) -> Self::Raw {
+            self.iter().map(P::to_raw).collect()
+        }
+        fn from_raw(raw: Self::Raw) -> Result<Self, String> {
+            let len = raw.len();
+            let items = raw.into_iter().map(P::from_raw).collect::<Result<Vec<_>, _>>()?;
+            items
+                .try_into()
+                .map_err(|_| format!("expected {N} values, not {len}"))
+        }
+    }
+
+    pub fn serialize<P: Plain, S: Serializer>(value: &P, serializer: S) -> Result<S::Ok, S::Error> {
+        value.to_raw().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, P: Plain, D: Deserializer<'de>>(deserializer: D) -> Result<P, D::Error> {
+        P::from_raw(P::Raw::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
+/// The whippyflight packages' tools, run as modules of the toolchain's Python: the
+/// gain tools are firmware-neutral, the fit, noise and log tools Betaflight's.
+const FIT_MODULE: &str = "whippyflight_betaflight.fit_model";
+const GEN_MODULE: &str = "whippyflight.gen_wfg";
 const LOGS_DIR: &str = "logs";
 const FLIGHT_INDEX: &str = "flights.json";
 const CLI_DUMP: &str = "cli_dump.txt";
@@ -47,20 +125,27 @@ const GAINS_FIT: &str = "gains/fit.txt";
 const GAINS_WEIGHTS: &str = "gains/weights.json";
 const FLICKS: &str = "gains/flicks.json";
 const FLICK_PLOTS_DIR: &str = "gains/plots";
-const FLICK_PLOT_SCRIPT: &str = "plot_flicks.py";
-const FIT_PLOT_SCRIPT: &str = "fit_diagnostics.py";
-const NOISE_SCRIPT: &str = "extract_noise.py";
-/// A fit's sensor noise (extract_noise.py), and its window and BF's roughness there.
+const FLICK_PLOT_MODULE: &str = "whippyflight.plot_flicks";
+const FIT_PLOT_MODULE: &str = "whippyflight_betaflight.fit_diagnostics";
+const NOISE_MODULE: &str = "whippyflight_betaflight.extract_noise";
+/// A fit's sensor noise (extract_noise), and its window and BF's roughness there.
 const NOISE: &str = "noise.bin";
 const NOISE_INFO: &str = "noise.json";
-const FRONT_SCRIPT: &str = "front_wfg.py";
+const FRONT_MODULE: &str = "whippyflight.front_wfg";
 /// A fit's Pareto front: the blobs front_wfg.py computed, their index, and their scores.
 const FRONT_DIR: &str = "front";
 const FRONT_INDEX: &str = "front.json";
 const FRONT_SCORES: &str = "scores.json";
 /// Flick traces are kept at this spacing (or the loop period, if longer).
-const FLICK_TRACE_DT_S: f64 = 0.0005;
-const REQUIRED_MODULES: &[&str] = &["numpy", "scipy", "control", "frccontrol"];
+const FLICK_TRACE_DT: Time = quantity!(5e-4, s);
+const REQUIRED_MODULES: &[&str] = &[
+    "whippyflight",
+    "whippyflight_betaflight",
+    "numpy",
+    "scipy",
+    "control",
+    "frccontrol",
+];
 
 #[derive(Default)]
 pub struct WhippyFlightState {
@@ -71,19 +156,21 @@ pub struct WhippyFlightState {
 #[serde(rename_all = "camelCase")]
 pub struct Toolchain {
     python: String,
-    tools_dir: String,
 }
 
 /// gen_wfg.py's LQR cost weights (Bryson: the excursion each state may make).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Weights {
-    /// Rate excursion, rot/s.
-    sigma_rate: f64,
-    /// Derivative-state excursion, rot/s².
-    sigma_deriv: f64,
-    /// Low-passed rate error the integral holds, rot/s.
-    sigma_int: f64,
+    /// Rate excursion.
+    #[serde(with = "plain")]
+    sigma_rate: Rate,
+    /// Derivative-state excursion.
+    #[serde(with = "plain")]
+    sigma_deriv: AngAccel,
+    /// Low-passed rate error the integral holds.
+    #[serde(with = "plain")]
+    sigma_int: Rate,
 }
 
 /// The motor-speed grid gen_wfg.py schedules the gains over.
@@ -92,9 +179,10 @@ pub struct Weights {
 pub struct Grid {
     /// Speeds per motor, N: the blob holds N⁴ points.
     resolution: u8,
-    /// The FC's `whippyflight_idle_rps`, rev/s; the grid starts there when it is above
+    /// The FC's `whippyflight_idle_rps`; the grid starts there when it is above
     /// gen_wfg's minimum. 0 for none.
-    idle_rps: f64,
+    #[serde(with = "plain")]
+    idle_rps: Rate,
 }
 
 /// Grids up to this resolution fit the firmware's gain store (`WHIPPYFLIGHT_GAIN_STORE_SIZE`).
@@ -117,8 +205,9 @@ pub enum Job {
     },
     #[serde(rename_all = "camelCase")]
     Gen {
-        /// Loop period, s: the FC's; the fit's logged loop rate if None.
-        dt: Option<f64>,
+        /// Loop period: the FC's; the fit's logged loop rate if None.
+        #[serde(default, with = "plain")]
+        dt: Option<Time>,
         fit: String,
         weights: Weights,
         grid: Grid,
@@ -133,9 +222,11 @@ pub enum Job {
     #[serde(rename_all = "camelCase")]
     Front {
         /// As [`Job::Gen`]'s.
-        dt: Option<f64>,
+        #[serde(default, with = "plain")]
+        dt: Option<Time>,
         fit: String,
-        sigma_rate: f64,
+        #[serde(with = "plain")]
+        sigma_rate: Rate,
         grid: Grid,
     },
     /// Plot `gains/flicks.json` into `gains/plots`.
@@ -155,7 +246,6 @@ pub struct EnvReport {
     python_version: Option<String>,
     missing_modules: Vec<String>,
     has_matplotlib: bool,
-    missing_scripts: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -171,6 +261,12 @@ pub struct FitRun {
     has_coefficients: bool,
     has_diagnostics: bool,
     has_noise: bool,
+    /// Its sensor noise's RMS as logged; None without it.
+    noise_rms: Option<NoiseRms>,
+    /// The turbulence its diagnostics measured; None without it.
+    turbulence: Option<TurbulenceSpec>,
+    /// The latency it measured; None for a fit without it (flown as none).
+    latency: Option<Latency>,
     /// Whether its Pareto front has been scored.
     has_front: bool,
     plots: Vec<String>,
@@ -283,34 +379,34 @@ fn list_names(dir: &Path, extension: &str) -> Vec<(String, u64)> {
 fn python_command(toolchain: &Toolchain) -> Command {
     let mut command = Command::new(&toolchain.python);
     command
-        .current_dir(&toolchain.tools_dir)
         .env("PYTHONUNBUFFERED", "1")
         .env("MPLBACKEND", "Agg")
         .stdin(Stdio::null());
     command
 }
 
-fn script(toolchain: &Toolchain, name: &str) -> String {
-    Path::new(&toolchain.tools_dir)
-        .join(name)
-        .to_string_lossy()
-        .into_owned()
+/// The interpreter arguments that run `module` (`python -m`).
+fn module(name: &str) -> Vec<String> {
+    vec!["-m".into(), name.into()]
 }
 
-fn check_dt(dt: Option<f64>) -> Result<(), String> {
-    match dt {
-        Some(dt) if !(1e-5..1e-2).contains(&dt) => {
-            Err(format!("implausible PID loop period: {dt} s"))
-        }
-        _ => Ok(()),
+/// The `--dt` argument, if the loop period is given.
+fn dt_args(dt: Option<Time>) -> Result<Vec<String>, String> {
+    let Some(dt) = dt else {
+        return Ok(vec![]);
+    };
+    if !(quantity!(1e-5, s)..quantity!(1e-2, s)).contains(&dt) {
+        return Err(format!("implausible PID loop period: {} s", value!(dt, s)));
     }
+    Ok(vec!["--dt".into(), format!("{:e}", value!(dt, s))])
 }
 
-fn check_sigma(flag: &str, sigma: f64) -> Result<(), String> {
-    if sigma.is_finite() && sigma > 0.0 {
-        Ok(())
+/// A σ argument: `value`, in the unit gen_wfg.py takes it in.
+fn sigma_args(flag: &str, value: f64) -> Result<[String; 2], String> {
+    if value.is_finite() && value > 0.0 {
+        Ok([flag.into(), format!("{value:e}")])
     } else {
-        Err(format!("{flag} must be positive, not {sigma}"))
+        Err(format!("{flag} must be positive, not {value}"))
     }
 }
 
@@ -322,18 +418,19 @@ fn grid_args(grid: &Grid) -> Result<Vec<String>, String> {
             grid.resolution
         ));
     }
-    if !(grid.idle_rps.is_finite() && grid.idle_rps >= 0.0) {
-        return Err(format!("implausible idle speed: {} rev/s", grid.idle_rps));
+    let idle_rps = value!(grid.idle_rps, rot / s);
+    if !(idle_rps.is_finite() && idle_rps >= 0.0) {
+        return Err(format!("implausible idle speed: {idle_rps} rev/s"));
     }
     Ok(vec![
         "--resolution".into(),
         grid.resolution.to_string(),
         "--idle-rps".into(),
-        format!("{:e}", grid.idle_rps),
+        format!("{idle_rps:e}"),
     ])
 }
 
-fn job_args(toolchain: &Toolchain, dir: &Path, job: &Job) -> Result<Vec<String>, String> {
+fn job_args(dir: &Path, job: &Job) -> Result<Vec<String>, String> {
     let text = |path: PathBuf| path.to_string_lossy().into_owned();
     let log = |name: &str| -> Result<String, String> {
         Ok(text(dir.join(LOGS_DIR).join(plain_name(name)?)))
@@ -343,7 +440,8 @@ fn job_args(toolchain: &Toolchain, dir: &Path, job: &Job) -> Result<Vec<String>,
             if logs.is_empty() {
                 return Err("no logs to scan".into());
             }
-            let mut args = vec![script(toolchain, FIT_SCRIPT), "flights".into()];
+            let mut args = module(FIT_MODULE);
+            args.push("flights".into());
             for name in logs {
                 args.push(log(name)?);
             }
@@ -357,7 +455,8 @@ fn job_args(toolchain: &Toolchain, dir: &Path, job: &Job) -> Result<Vec<String>,
             if !matches!(drag.as_str(), "auto" | "on" | "off") {
                 return Err(format!("invalid drag mode: {drag}"));
             }
-            let mut args = vec![script(toolchain, FIT_SCRIPT), "fit".into()];
+            let mut args = module(FIT_MODULE);
+            args.push("fit".into());
             for spec in flights {
                 let (name, index) = flight_spec(spec)?;
                 let path = log(name)?;
@@ -386,29 +485,22 @@ fn job_args(toolchain: &Toolchain, dir: &Path, job: &Job) -> Result<Vec<String>,
             weights,
             grid,
         } => {
-            check_dt(*dt)?;
+            let dt = dt_args(*dt)?;
+            let sigmas = [
+                sigma_args("--sigma-rate", value!(weights.sigma_rate, rot / s))?,
+                sigma_args("--sigma-deriv", value!(weights.sigma_deriv, rot / s ^ 2))?,
+                sigma_args("--sigma-int", value!(weights.sigma_int, rot / s))?,
+            ];
             let grid = grid_args(grid)?;
             let coefficients = dir.join(FITS_DIR).join(plain_name(fit)?).join(COEFFICIENTS);
             if !coefficients.is_file() {
                 return Err(format!("no fit {fit} to compute gains from"));
             }
             std::fs::create_dir_all(dir.join("gains")).map_err(|e| e.to_string())?;
-            let mut args = vec![
-                script(toolchain, GEN_SCRIPT),
-                text(coefficients),
-                text(dir.join(GAINS)),
-            ];
-            if let Some(dt) = dt {
-                args.extend(["--dt".into(), format!("{dt:e}")]);
-            }
-            for (flag, sigma) in [
-                ("--sigma-rate", weights.sigma_rate),
-                ("--sigma-deriv", weights.sigma_deriv),
-                ("--sigma-int", weights.sigma_int),
-            ] {
-                check_sigma(flag, sigma)?;
-                args.extend([flag.into(), format!("{sigma:e}")]);
-            }
+            let mut args = module(GEN_MODULE);
+            args.extend([text(coefficients), text(dir.join(GAINS))]);
+            args.extend(dt);
+            args.extend(sigmas.into_iter().flatten());
             args.extend(grid);
             Ok(args)
         }
@@ -419,13 +511,20 @@ fn job_args(toolchain: &Toolchain, dir: &Path, job: &Job) -> Result<Vec<String>,
             }
             let (name, index) = flight_spec(flight)?;
             let path = log(name)?;
-            Ok(vec![
-                script(toolchain, NOISE_SCRIPT),
+            let mut args = module(NOISE_MODULE);
+            args.extend([
                 index.map_or(path.clone(), |n| format!("{path}#{n}")),
                 text(out.join(NOISE)),
                 "--json".into(),
                 text(out.join(NOISE_INFO)),
-            ])
+            ]);
+            // The fit's model takes the motion it explains out, its diagnostics place the splits.
+            for (flag, file) in [("--fit", COEFFICIENTS), ("--diagnostics", DIAGNOSTICS)] {
+                if out.join(file).is_file() {
+                    args.extend([flag.into(), text(out.join(file))]);
+                }
+            }
+            Ok(args)
         }
         Job::FitPlots { fit } => {
             let out = dir.join(FITS_DIR).join(plain_name(fit)?);
@@ -433,11 +532,9 @@ fn job_args(toolchain: &Toolchain, dir: &Path, job: &Job) -> Result<Vec<String>,
                 return Err(format!("no diagnostics for fit {fit} to plot"));
             }
             let _ = std::fs::remove_dir_all(out.join(PLOTS_DIR));
-            Ok(vec![
-                script(toolchain, FIT_PLOT_SCRIPT),
-                text(out.join(DIAGNOSTICS)),
-                text(out.join(PLOTS_DIR)),
-            ])
+            let mut args = module(FIT_PLOT_MODULE);
+            args.extend([text(out.join(DIAGNOSTICS)), text(out.join(PLOTS_DIR))]);
+            Ok(args)
         }
         Job::Front {
             dt,
@@ -445,24 +542,18 @@ fn job_args(toolchain: &Toolchain, dir: &Path, job: &Job) -> Result<Vec<String>,
             sigma_rate,
             grid,
         } => {
-            check_dt(*dt)?;
-            check_sigma("--sigma-rate", *sigma_rate)?;
+            let dt = dt_args(*dt)?;
+            let sigma_rate = sigma_args("--sigma-rate", value!(*sigma_rate, rot / s))?;
             let grid = grid_args(grid)?;
             let out = dir.join(FITS_DIR).join(plain_name(fit)?);
             if !out.join(COEFFICIENTS).is_file() {
                 return Err(format!("no fit {fit} to compute gains from"));
             }
             let _ = std::fs::remove_dir_all(out.join(FRONT_DIR));
-            let mut args = vec![
-                script(toolchain, FRONT_SCRIPT),
-                text(out.join(COEFFICIENTS)),
-                text(out.join(FRONT_DIR)),
-                "--sigma-rate".into(),
-                format!("{sigma_rate:e}"),
-            ];
-            if let Some(dt) = dt {
-                args.extend(["--dt".into(), format!("{dt:e}")]);
-            }
+            let mut args = module(FRONT_MODULE);
+            args.extend([text(out.join(COEFFICIENTS)), text(out.join(FRONT_DIR))]);
+            args.extend(sigma_rate);
+            args.extend(dt);
             args.extend(grid);
             Ok(args)
         }
@@ -471,11 +562,9 @@ fn job_args(toolchain: &Toolchain, dir: &Path, job: &Job) -> Result<Vec<String>,
                 return Err("no flicks to plot".into());
             }
             let _ = std::fs::remove_dir_all(dir.join(FLICK_PLOTS_DIR));
-            Ok(vec![
-                script(toolchain, FLICK_PLOT_SCRIPT),
-                text(dir.join(FLICKS)),
-                text(dir.join(FLICK_PLOTS_DIR)),
-            ])
+            let mut args = module(FLICK_PLOT_MODULE);
+            args.extend([text(dir.join(FLICKS)), text(dir.join(FLICK_PLOTS_DIR))]);
+            Ok(args)
         }
     }
 }
@@ -492,23 +581,10 @@ fn forward<R: Read + Send + 'static>(
     })
 }
 
-/// Python version, missing modules and missing scripts for a toolchain.
+/// Python version and missing modules for a toolchain.
 #[tauri::command]
 pub async fn whippyflight_check_env(toolchain: Toolchain) -> Result<EnvReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let missing_scripts = [
-            FIT_SCRIPT,
-            GEN_SCRIPT,
-            FLICK_PLOT_SCRIPT,
-            FIT_PLOT_SCRIPT,
-            NOISE_SCRIPT,
-            FRONT_SCRIPT,
-            "bbl.py",
-        ]
-        .iter()
-        .filter(|s| !Path::new(&toolchain.tools_dir).join(s).is_file())
-        .map(|s| s.to_string())
-        .collect();
         let probe = "import importlib.util, sys\n\
                      print(sys.version.split()[0])\n\
                      for m in sys.argv[1:]:\n    print(m, importlib.util.find_spec(m) is not None)";
@@ -527,7 +603,6 @@ pub async fn whippyflight_check_env(toolchain: Toolchain) -> Result<EnvReport, S
                 python_version: None,
                 missing_modules: REQUIRED_MODULES.iter().map(|m| m.to_string()).collect(),
                 has_matplotlib: false,
-                missing_scripts,
             };
         };
         let mut lines = output.lines();
@@ -547,7 +622,6 @@ pub async fn whippyflight_check_env(toolchain: Toolchain) -> Result<EnvReport, S
                 .map(|m| m.to_string())
                 .collect(),
             has_matplotlib: found("matplotlib"),
-            missing_scripts,
         }
     })
     .await
@@ -602,7 +676,7 @@ pub async fn whippyflight_run(
     job: Job,
 ) -> Result<i32, String> {
     let dir = self::workdir(&workdir)?;
-    let args = job_args(&toolchain, &dir, &job)?;
+    let args = job_args(&dir, &job)?;
     before_job(&dir, &job);
     let slot = state.child.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -679,7 +753,13 @@ pub fn whippyflight_workspace(workdir: String) -> Result<Workspace, String> {
             (path.is_dir() && plain_name(&id).is_ok()).then(|| FitRun {
                 has_coefficients: path.join(COEFFICIENTS).is_file(),
                 has_diagnostics: path.join(DIAGNOSTICS).is_file(),
-                has_noise: path.join(NOISE).is_file(),
+                has_noise: path.join(NOISE).is_file() && noise_current(&path),
+                noise_rms: load_noise(&path)
+                    .ok()
+                    .and_then(|(noise, _)| noise)
+                    .map(|n| NoiseRms::of(&n, 1.0, 1.0)),
+                turbulence: fit_turbulence(&path),
+                latency: fit_latency(&path),
                 has_front: path.join(FRONT_DIR).join(FRONT_SCORES).is_file(),
                 plots: list_names(&path.join(PLOTS_DIR), ".png")
                     .into_iter()
@@ -861,98 +941,333 @@ pub fn whippyflight_reveal(workdir: String, sub: Option<String>) -> Result<(), S
         .map_err(|e| e.to_string())
 }
 
-/// One flick (see `whippyflight_control::sim::flick`): ratios are of `amp`,
-/// times in ms; `rise90_ms` is null when 90% was never reached.
+/// One flick (see `whippyflight_sim::flick`): ratios are of `amp`;
+/// `rise90_ms` is null when 90% was never reached.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FlickMetrics {
     target_ovs: f64,
-    target_lag_ms: f64,
-    gyro_lag_ms: f64,
-    rise90_ms: Option<f64>,
+    #[serde(with = "plain")]
+    target_lag_ms: Millis,
+    #[serde(with = "plain")]
+    gyro_lag_ms: Millis,
+    #[serde(with = "plain")]
+    rise90_ms: Option<Millis>,
     overshoot: f64,
     hold_err: f64,
     track_rms: f64,
     residual: f64,
     sat_frac: f64,
-    /// Motor roughness from the fit's sensor noise, V; None without its noise.
-    rough_v: Option<f64>,
+    /// Motor roughness from the fit's sensor noise; None without its noise.
+    #[serde(with = "plain")]
+    rough_v: Option<Voltage>,
 }
 
-/// One flick's traces from the stick's start, in rot/s every `trace_dt` s:
-/// `response` is the gyro with the stick minus without it.
+/// One flick's traces from the stick's start, every `trace_dt`: `response`
+/// is the gyro with the stick minus without it.
 #[derive(Serialize, Deserialize)]
 pub struct FlickResult {
-    /// "roll" or "pitch".
+    /// "roll", "pitch" or "yaw".
     axis: String,
-    rise_ms: f64,
-    amp: f64,
+    #[serde(with = "plain")]
+    rise_ms: Millis,
+    /// The fastest rise the target limits allow; `rise_ms` is longer when a
+    /// slower stick was asked for.
+    #[serde(with = "plain")]
+    limit_rise_ms: Millis,
+    /// FRD: negative for a flick the other way.
+    #[serde(with = "plain")]
+    amp: Rate,
     metrics: FlickMetrics,
-    stick: Vec<f32>,
-    setpoint: Vec<f32>,
-    target: Vec<f32>,
-    response: Vec<f32>,
+    #[serde(with = "plain")]
+    stick: Vec<RateF32>,
+    #[serde(with = "plain")]
+    setpoint: Vec<RateF32>,
+    #[serde(with = "plain")]
+    target: Vec<RateF32>,
+    #[serde(with = "plain")]
+    response: Vec<RateF32>,
     /// Ticks within each trace sample the motors saturated, as a fraction.
     saturated: Vec<f32>,
-    /// Commanded voltage of each motor (noise-free), V.
-    volts: [Vec<f32>; 4],
+    /// Commanded voltage of each motor (noise-free).
+    #[serde(with = "plain")]
+    volts: [Vec<VoltageF32>; 4],
+    /// Each motor's shaft speed, by firmware index (the plant's, without telemetry noise).
+    #[serde(with = "plain")]
+    motor_speeds: [Vec<RateF32>; 4],
 }
 
-/// `gains/flicks.json`: one full-stick flick per axis, the fastest raised
-/// cosine within the gains' target slew and jerk limits.
+/// `gains/flicks.json`: a full-stick flick each way on each axis, the fastest
+/// raised cosine within the gains' target slew and jerk limits (or slower, to
+/// `min_rise_ms`).
 #[derive(Serialize, Deserialize)]
 pub struct FlickReport {
     version: u32,
     /// The fit whose plant the gains were flown on.
     fit: String,
-    loop_dt: f64,
-    trace_dt: f64,
-    /// How long the stick holds before releasing, s after it gets there.
-    hold_s: f64,
-    /// The target limits, rot/s² and rot/s³.
-    slew: f64,
-    jerk: f64,
-    /// Where the amplitudes, the full-stick rates, came from: "fc", "log"
-    /// (the fit's blackbox header) or "default" (Betaflight's).
+    /// The slowest stick asked for; None for the fastest the limits allow.
+    #[serde(with = "plain")]
+    min_rise_ms: Option<Millis>,
+    /// The feedback gains flown; those off were zeroed.  The margins, trim and
+    /// hover roughness are still the full gains'.
+    feedback: FlickFeedback,
+    /// What they were asked to fly in.
+    conditions: FlickConditions,
+    /// The delays flown (the fit's, or the conditions'), in whole controller ticks.
+    latency: Latency,
+    /// The sensor noise they flew in; None without the fit's noise.
+    noise_rms: Option<NoiseRms>,
+    /// The turbulence they flew in; None for none.
+    turbulence: Option<TurbulenceSpec>,
+    /// Whether the gyro went through the fit's filters: asked, and modeled.
+    gyro_filtered: bool,
+    #[serde(with = "plain")]
+    loop_dt: Time,
+    #[serde(with = "plain")]
+    trace_dt: Time,
+    /// How long the stick holds before releasing, after it gets there.
+    #[serde(with = "plain")]
+    hold_s: Time,
+    /// The target limits.
+    #[serde(with = "plain")]
+    slew: AngAccel,
+    #[serde(with = "plain")]
+    jerk: AngJerk,
+    /// Where the amplitudes came from: "fc", "log" (the fit's blackbox header),
+    /// "manual" (set in the tab) or "default" (Betaflight's).
     rates_from: String,
     /// The stick estimator's tracking index flown (`whippyflight_stick_tracking`).
     stick_tracking: f32,
     /// Where it came from: "fc" (the settings panel) or "log" (the fit's blackbox header).
     stick_tracking_from: String,
-    /// BF's own motor roughness, V, over the window of the log the noise came from:
+    /// The motor-speed low-pass flown (`whippyflight_rpm_lpf_hz`); 0 for off.
+    #[serde(with = "plain")]
+    motor_lpf_hz: Freq,
+    /// Where it came from, as `stick_tracking_from`.
+    motor_lpf_from: String,
+    /// BF's own motor roughness over the window of the log the noise came from:
     /// everything above 50 Hz in its motor outputs at hover, not only what noise caused.
-    bf_rough_v: Option<f64>,
+    #[serde(with = "plain")]
+    bf_rough_v: Option<Voltage>,
     /// What the fit's sensor noise adds to these gains' motor voltages at hover
-    /// (`sim::margin::hover_roughness`), V, the like-for-like figure beside
+    /// (`sim::margin::hover_roughness`), the like-for-like figure beside
     /// [`bf_rough_v`]; None without the noise.
-    hover_rough_v: Option<f64>,
-    /// Extra gyro delay, ms, the gains tolerate on top of the fit's gyro filters
-    /// (`sim::margin`); −1 if they don't fly cleanly even without, None if the
-    /// filters aren't modeled.
-    delay_margin_ms: Option<f64>,
+    #[serde(with = "plain")]
+    hover_rough_v: Option<Voltage>,
+    /// Extra gyro delay the gains tolerate on top of the fit's gyro filters and
+    /// [`latency`] (`sim::margin`); −1 ms if they don't fly cleanly even without,
+    /// None if the filters aren't modeled.
+    #[serde(with = "plain")]
+    delay_margin_ms: Option<Millis>,
     /// The most [`delay_margin_ms`] reports.
-    max_margin_ms: f64,
-    /// Attitude, deg, a 5% CG shift costs before the integral takes up the
+    #[serde(with = "plain")]
+    max_margin_ms: Millis,
+    /// Attitude a 5% CG shift costs before the integral takes up the
     /// torque (`sim::margin::trim`); None if the filters aren't modeled.
-    trim_deg: Option<f64>,
+    #[serde(with = "plain")]
+    trim_deg: Option<Degrees>,
     flicks: Vec<FlickResult>,
 }
 
-/// Betaflight's default max rate, rot/s (670°/s on every axis).
-const DEFAULT_MAX_RATE_RPS: f64 = 670.0 / 360.0;
-
-/// The rise, s, of the fastest raised-cosine stick to `amp` (rot/s) whose
-/// peak slope Aπ/2T and slope change Aπ²/2T² stay within `slew` and `jerk`.
-fn limit_rise_s(amp: f64, slew: f64, jerk: f64) -> f64 {
-    use std::f64::consts::PI;
-    (PI * (amp / (2.0 * jerk)).sqrt()).max(PI * amp / (2.0 * slew))
+/// Which feedback gains the flicks fly with (`whippyflight_control::gains::FeedbackTerms`);
+/// all off for the feedforward alone.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FlickFeedback {
+    p: bool,
+    i: bool,
+    d: bool,
 }
 
-/// Full-stick roll, pitch and yaw rates, rot/s, and where they came from.
+impl Default for FlickFeedback {
+    fn default() -> Self {
+        Self { p: true, i: true, d: true }
+    }
+}
+
+impl From<FlickFeedback> for whippyflight_control::gains::FeedbackTerms {
+    fn from(f: FlickFeedback) -> Self {
+        Self { p: f.p, i: f.i, d: f.d }
+    }
+}
+
+/// What the flicks fly in besides the stick (`whippyflight_sim::flick::Conditions`).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+pub struct FlickConditions {
+    /// The fit's gyro low-pass filters between the body rates and the controller.
+    gyro_filter: bool,
+    /// The fit's recorded gyro and motor-speed noise, each on or off.
+    gyro_noise: bool,
+    motor_noise: bool,
+    /// RMS of the gyro noise over its axes and of the motor-speed noise over the
+    /// motors (the fit's recording, rescaled); None for as logged.
+    #[serde(default, with = "plain")]
+    gyro_noise_rms: Option<Rate>,
+    #[serde(default, with = "plain")]
+    motor_speed_noise_rms: Option<Rate>,
+    /// Fly the plotted flights with the noise; otherwise it only sets the roughness.
+    noisy_flights: bool,
+    /// CG offset [right, forward], % of the arm.
+    cg_shift_pct: [f64; 2],
+    turbulence: bool,
+    /// Turbulence: RMS angular acceleration per axis [roll, pitch, yaw], and its
+    /// bandwidth; None for the fit's (or, without it, none and 10 Hz).
+    #[serde(default, with = "plain")]
+    turbulence_rms: Option<[AngAccel; 3]>,
+    #[serde(default, with = "plain")]
+    turbulence_hz: Option<Freq>,
+    /// Motor-command and speed-telemetry delays; None for the fit's.  They set
+    /// the plant, so the margins and trim fly them too.
+    #[serde(default, with = "plain")]
+    actuator_delay_ms: Option<Millis>,
+    #[serde(default, with = "plain")]
+    telemetry_delay_ms: Option<Millis>,
+}
+
+impl Default for FlickConditions {
+    fn default() -> Self {
+        Self {
+            gyro_filter: true,
+            gyro_noise: true,
+            motor_noise: true,
+            gyro_noise_rms: None,
+            motor_speed_noise_rms: None,
+            noisy_flights: false,
+            cg_shift_pct: [0.0; 2],
+            turbulence: false,
+            turbulence_rms: None,
+            turbulence_hz: None,
+            actuator_delay_ms: None,
+            telemetry_delay_ms: None,
+        }
+    }
+}
+
+impl FlickConditions {
+    fn check(&self) -> Result<(), String> {
+        let gyro = self.gyro_noise_rms.map(|g| value!(g, rot / s));
+        let motor = self.motor_speed_noise_rms.map(|m| value!(m, rot / s));
+        if ![gyro, motor].iter().flatten().all(|x| x.is_finite() && *x >= 0.0) {
+            return Err(format!("bad noise RMS {gyro:?}, {motor:?} rot/s"));
+        }
+        if !self.cg_shift_pct.iter().all(|x| x.is_finite() && x.abs() <= 50.0) {
+            return Err(format!("CG offsets must be within ±50%, not {:?}", self.cg_shift_pct));
+        }
+        let rms = self.turbulence_rms.map(|r| r.map(|a| value!(a, rot / s ^ 2)));
+        let hz = self.turbulence_hz.map(|f| value!(f, Hz));
+        if !rms.iter().flatten().all(|x| x.is_finite() && *x >= 0.0)
+            || !hz.iter().all(|x| x.is_finite() && *x > 0.0 && *x <= 1000.0)
+        {
+            return Err(format!("bad turbulence {rms:?} rot/s² at {hz:?} Hz"));
+        }
+        let delays = [self.actuator_delay_ms, self.telemetry_delay_ms];
+        if !delays.iter().flatten().all(|&d| value!(d, ms).is_finite() && quantity!(0.0, ms) <= d && d <= MAX_FLICK_DELAY) {
+            return Err(format!(
+                "delays must be 0–{} ms, not {:?} ms",
+                value!(MAX_FLICK_DELAY, ms),
+                delays.map(|d| d.map(|d| value!(d, ms)))
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// RMS of a sensor noise recording, scaled: the gyro over its axes, the motor
+/// speed over the motors at the recording's motor speed.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+pub struct NoiseRms {
+    #[serde(with = "plain")]
+    gyro: Rate,
+    #[serde(with = "plain")]
+    motor: Rate,
+    /// How the motor-speed noise grows with each motor's speed: as speed^this;
+    /// None for the recording replayed alike at every speed.
+    motor_speed_exponent: Option<f64>,
+}
+
+impl NoiseRms {
+    fn of(noise: &whippyflight_sim::noise::Noise, gyro_scale: f32, motor_scale: f32) -> Self {
+        let (gyro, motor) = noise.rms();
+        Self {
+            gyro: gyro * gyro_scale as f64,
+            motor: motor * motor_scale as f64,
+            motor_speed_exponent: noise.speed_law().map(|law| law.exponent),
+        }
+    }
+}
+
+/// Turbulence: RMS angular acceleration per axis [roll, pitch, yaw], and one bandwidth.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+pub struct TurbulenceSpec {
+    #[serde(with = "plain")]
+    rms: [AngAccel; 3],
+    #[serde(with = "plain")]
+    hz: Freq,
+}
+
+/// What `fits/<fit>/diagnostics.json` measured of the turbulence: each axis's
+/// RMS, and their corners averaged weighted by power.  None unless every axis has one.
+fn fit_turbulence(fit_dir: &Path) -> Option<TurbulenceSpec> {
+    let diag: serde_json::Value = serde_json::from_slice(&std::fs::read(fit_dir.join(DIAGNOSTICS)).ok()?).ok()?;
+    let axes = ["roll", "pitch", "yaw"].map(|a| {
+        let t = &diag["turbulence"][a];
+        Some((quantity!(t["rms"].as_f64()?, rot / s ^ 2), quantity!(t["hz"].as_f64()?, Hz)))
+    });
+    let axes: [(AngAccel, Freq); 3] = [axes[0]?, axes[1]?, axes[2]?];
+    let power = axes.map(|(rms, _)| rms * rms);
+    let total = power.iter().fold(quantity!(0.0, rot ^ 2 / s ^ 4), |sum, &p| sum + p);
+    if total <= quantity!(0.0, rot ^ 2 / s ^ 4) {
+        return None;
+    }
+    let hz = axes
+        .iter()
+        .zip(power)
+        .fold(quantity!(0.0, Hz), |sum, (&(_, hz), p)| sum + hz * f64::from(p / total));
+    Some(TurbulenceSpec { rms: axes.map(|(rms, _)| rescale(rms)), hz })
+}
+
+/// Dead time between a motor command and the motors acting on it, and between
+/// their speed and its report to the controller (`whippyflight_sim::plant::Model`).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+pub struct Latency {
+    #[serde(with = "plain")]
+    actuator_ms: Millis,
+    #[serde(with = "plain")]
+    telemetry_ms: Millis,
+}
+
+/// The longest delay the flicks can be asked to fly.
+const MAX_FLICK_DELAY: Millis = quantity!(20.0, ms);
+
+/// What `fits/<fit>/coefficients.json` measured of the latency; None for a fit without it.
+fn fit_latency(fit_dir: &Path) -> Option<Latency> {
+    let c: serde_json::Value = serde_json::from_slice(&std::fs::read(fit_dir.join(COEFFICIENTS)).ok()?).ok()?;
+    let ms = |key: &str| c["latency"][key].as_f64().map(|v| quantity!(v, ms));
+    Some(Latency { actuator_ms: ms("actuator_ms")?, telemetry_ms: ms("telemetry_ms")? })
+}
+
+/// The slowest stick rise the flicks can be asked for.
+const MAX_MIN_RISE: Millis = quantity!(1000.0, ms);
+
+/// Betaflight's default max rate, on every axis.
+fn default_max_rate() -> Rate {
+    rescale(quantity!(670.0, deg / s))
+}
+
+/// The rise of the fastest raised-cosine stick to `amp` whose peak slope
+/// Aπ/2T and slope change Aπ²/2T² stay within `slew` and `jerk`.
+fn limit_rise(amp: Rate, slew: AngAccel, jerk: AngJerk) -> Time {
+    use std::f64::consts::PI;
+    let by_jerk: Time = PI * (amp / (2.0 * jerk)).sqrt();
+    let by_slew: Time = PI * amp / (2.0 * slew);
+    by_jerk.max(by_slew)
+}
+
+/// Full-stick roll, pitch and yaw rates, and where they came from.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MaxRates {
-    rps: [f64; 3],
-    /// "fc" or "log".
+    #[serde(with = "plain")]
+    rps: [Rate; 3],
+    /// "fc", "log" or "manual" (set in the tab).
     from: String,
 }
 
@@ -961,38 +1276,64 @@ fn read_file(path: &Path) -> Result<Vec<u8>, String> {
 }
 
 /// The plant `fits/<fit>` fitted.
-fn fit_model(dir: &Path, fit: &str) -> Result<whippyflight_control::sim::plant::Model, String> {
+fn fit_model(dir: &Path, fit: &str) -> Result<whippyflight_sim::plant::Model, String> {
     let coefficients = dir.join(FITS_DIR).join(plain_name(fit)?).join(COEFFICIENTS);
     let text = String::from_utf8(read_file(&coefficients)?).map_err(|e| e.to_string())?;
-    whippyflight_control::sim::plant::Model::from_json(&text, &coefficients.to_string_lossy())
+    whippyflight_sim::plant::Model::from_json(&text, &coefficients.to_string_lossy())
 }
 
 /// A fit's sensor noise, if it has been extracted, and BF's own roughness over it.
 fn fit_noise(
     dir: &Path,
     fit: &str,
-) -> Result<(Option<whippyflight_control::sim::noise::Noise>, Option<f64>), String> {
-    use whippyflight_control::sim::{noise::Noise, units::Time};
-    let fit_dir = dir.join(FITS_DIR).join(plain_name(fit)?);
-    let noise = match std::fs::read(fit_dir.join(NOISE)) {
-        Ok(bytes) => Some(Noise::from_bytes(&bytes, Time::new(0.0), 1.0, 1.0)?),
-        Err(_) => None,
-    };
-    let bf_rough_v = std::fs::read(fit_dir.join(NOISE_INFO))
+) -> Result<(Option<whippyflight_sim::noise::Noise>, Option<Voltage>), String> {
+    load_noise(&dir.join(FITS_DIR).join(plain_name(fit)?))
+}
+
+/// Whether the fit in `fit_dir`'s `noise.json` is from an extractor that
+/// measures the motor-speed noise's speed law (null where it couldn't);
+/// an older extraction is redone.
+fn noise_current(fit_dir: &Path) -> bool {
+    std::fs::read(fit_dir.join(NOISE_INFO))
         .ok()
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| v["bf_rough_v"].as_f64());
+        .is_some_and(|info| info.get("motor_noise_speed").is_some())
+}
+
+/// [`fit_noise`] of the fit in `fit_dir`: the recording, its motor-speed
+/// noise following the speed law `noise.json` measured (if any).
+fn load_noise(fit_dir: &Path) -> Result<(Option<whippyflight_sim::noise::Noise>, Option<Voltage>), String> {
+    use whippyflight_sim::noise::{Noise, SpeedLaw};
+    let info = std::fs::read(fit_dir.join(NOISE_INFO))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .unwrap_or_default();
+    let law = &info["motor_noise_speed"];
+    let law = law["reference_rps"]
+        .as_f64()
+        .zip(law["exponent"].as_f64())
+        .map(|(reference, exponent)| SpeedLaw { reference: quantity!(reference, rot / s), exponent });
+    let noise = match std::fs::read(fit_dir.join(NOISE)) {
+        Ok(bytes) => Some(Noise::from_bytes(&bytes, quantity!(0.0, s), 1.0, 1.0)?.with_speed_law(law)?),
+        Err(_) => None,
+    };
+    let bf_rough_v = info["bf_rough_v"].as_f64().map(|v| quantity!(v, V));
     Ok((noise, bf_rough_v))
 }
 
 fn load_blob(path: &Path) -> Result<whippyflight_control::gains::GainStorage, String> {
+    load_blob_bytes(path, &read_file(path)?)
+}
+
+/// [`load_blob`] of `bytes`, read from `path`.
+fn load_blob_bytes(path: &Path, bytes: &[u8]) -> Result<whippyflight_control::gains::GainStorage, String> {
     use whippyflight_control::gains::{GainStorage, load_gains};
-    use whippyflight_control::sim::static_blob;
+    use whippyflight_sim::static_blob;
     use whippyflight_control::types::GainLoadResult;
     let mut gains = GainStorage::new();
     // load_gains reads the tables in place for as long as the gains are used; the blob is
     // a few kB, leaked once per simulation.
-    let result = load_gains(static_blob(&read_file(path)?), &mut gains);
+    let result = load_gains(static_blob(bytes), &mut gains);
     if result != GainLoadResult::Ok {
         return Err(format!("{} doesn't load: {result:?}", path.display()));
     }
@@ -1003,11 +1344,14 @@ fn fly_flicks(
     dir: &Path,
     max_rates: Option<MaxRates>,
     stick_tracking: Option<f32>,
+    motor_lpf: Option<Freq>,
+    min_rise: Option<Millis>,
+    feedback: FlickFeedback,
+    conditions: FlickConditions,
 ) -> Result<FlickReport, String> {
+    conditions.check()?;
     use whippyflight_control::setpoint::target_limits;
-    use whippyflight_control::sim::units::{Rate, Time};
-    use whippyflight_control::sim::{flick, margin};
-    use whippyunits::value;
+    use whippyflight_sim::{flick, margin};
 
     let fit = std::fs::read_to_string(dir.join(GAINS_FIT))
         .map_err(|_| "it isn't recorded which fit the gains came from".to_string())?
@@ -1022,53 +1366,118 @@ fn fly_flicks(
         Some(lambda) => return Err(format!("bad stick tracking {lambda}")),
         None => "log",
     };
-    let gains = load_blob(&dir.join(GAINS))?;
-    let loop_dt = value!(gains.header.dt, s, f32) as f64;
-    let stride = ((FLICK_TRACE_DT_S / loop_dt).round() as usize).max(1);
-    let thin = |v: Vec<f32>| v.into_iter().step_by(stride).collect::<Vec<_>>();
-    let rps = |v: &[Rate]| {
-        v.iter()
-            .map(|&r| value!(r, rot / s) as f32)
-            .collect::<Vec<_>>()
+    let motor_lpf_from = match motor_lpf {
+        Some(hz) if value!(hz, Hz).is_finite() && hz >= quantity!(0.0, Hz) => {
+            model.motor_lpf = hz;
+            "fc"
+        }
+        Some(hz) => return Err(format!("bad motor speed low-pass {} Hz", value!(hz, Hz))),
+        None => "log",
     };
-    let ms = |t: Time| value!(t, ms);
+    if let Some(d) = conditions.actuator_delay_ms {
+        model.actuator_delay = rescale(d);
+    }
+    if let Some(d) = conditions.telemetry_delay_ms {
+        model.telemetry_delay = rescale(d);
+    }
+    let blob = read_file(&dir.join(GAINS))?;
+    let gains = load_blob_bytes(&dir.join(GAINS), &blob)?;
+    let partial = match feedback == FlickFeedback::default() {
+        true => None,
+        false => {
+            let blob = whippyflight_control::gains::with_feedback(&blob, feedback.into());
+            Some(load_blob_bytes(&dir.join(GAINS), &blob)?)
+        }
+    };
+    let flown = partial.as_ref().unwrap_or(&gains);
+    let loop_dt: Time = gains.header.dt.lossy_into();
+    let stride = (f64::from(FLICK_TRACE_DT / loop_dt).round() as usize).max(1);
+    let thin = |v: &[Rate]| -> Vec<RateF32> {
+        v.iter().step_by(stride).map(|r| r.lossy_into()).collect()
+    };
     let (rates, rates_from) = match max_rates {
-        Some(MaxRates { rps, from }) if from == "fc" || from == "log" => (rps, from),
+        Some(MaxRates { rps, from }) if ["fc", "log", "manual"].contains(&from.as_str()) => (rps, from),
         Some(MaxRates { from, .. }) => return Err(format!("unknown rate source {from}")),
-        None => ([DEFAULT_MAX_RATE_RPS; 3], "default".into()),
+        None => ([default_max_rate(); 3], "default".into()),
     };
-    if rates.iter().any(|r| !(r.is_finite() && *r > 0.0)) {
-        return Err(format!("bad max rates {rates:?} rot/s"));
+    let rates_rps = rates.map(|r| value!(r, rot / s));
+    if rates_rps.iter().any(|r| !(r.is_finite() && *r > 0.0)) {
+        return Err(format!("bad max rates {rates_rps:?} rot/s"));
+    }
+    if let Some(rise) = min_rise {
+        if !(quantity!(0.0, ms) < rise && rise <= MAX_MIN_RISE) {
+            return Err(format!("bad stick rise {} ms", value!(rise, ms)));
+        }
     }
     let (noise, bf_rough_v) = fit_noise(dir, &fit)?;
     let cutoffs = margin::pt1_cutoffs(&model).ok();
     let delay_margin_ms = cutoffs
         .as_ref()
-        .map(|c| value!(margin::delay_margin(&gains, &model, c), ms));
+        .map(|c| margin::delay_margin(&gains, &model, c));
     let trim_deg = cutoffs
         .as_ref()
-        .map(|c| value!(margin::trim(&gains, &model, c).0, deg));
+        .map(|c| rescale(margin::trim(&gains, &model, c).0));
     let hover_rough_v = noise.as_ref().map(|n| {
         let filters = cutoffs.as_deref().unwrap_or_default();
-        value!(margin::hover_roughness(&gains, &model, filters, n), V)
+        margin::hover_roughness(&gains, &model, filters, n)
     });
+    let gyro_filtered = conditions.gyro_filter && cutoffs.is_some();
+    let (gyro_scale, motor_scale) = noise.as_ref().map_or((0.0, 0.0), |n| {
+        let (gyro, motor) = n.rms();
+        let scale = |on: bool, asked: Option<Rate>, logged: Rate| match asked {
+            _ if !on => 0.0,
+            None => 1.0,
+            Some(_) if logged <= quantity!(0.0, rot / s) => 0.0,
+            Some(asked) => f64::from(asked / logged) as f32,
+        };
+        (
+            scale(conditions.gyro_noise, conditions.gyro_noise_rms, gyro),
+            scale(conditions.motor_noise, conditions.motor_speed_noise_rms, motor),
+        )
+    });
+    let flick_noise = noise
+        .as_ref()
+        .filter(|_| gyro_scale > 0.0 || motor_scale > 0.0)
+        .map(|n| n.scaled(gyro_scale, motor_scale));
+    let logged_turbulence = fit_turbulence(&dir.join(FITS_DIR).join(plain_name(&fit)?));
+    let turbulence = conditions.turbulence.then(|| TurbulenceSpec {
+        rms: conditions
+            .turbulence_rms
+            .or(logged_turbulence.map(|t| t.rms))
+            .unwrap_or([quantity!(0.0, rot / s ^ 2); 3]),
+        hz: conditions
+            .turbulence_hz
+            .or(logged_turbulence.map(|t| t.hz))
+            .unwrap_or(quantity!(10.0, Hz)),
+    });
+    let turbulence = turbulence.filter(|t| t.rms.iter().any(|&a| a > quantity!(0.0, rot / s ^ 2)));
+    let flick_conditions = flick::Conditions {
+        gyro_filter: if gyro_filtered { cutoffs.as_deref().unwrap_or_default() } else { &[] },
+        noise: flick_noise.as_ref(),
+        noisy_flights: conditions.noisy_flights,
+        cg_shift: conditions.cg_shift_pct.map(|p| p / 100.0),
+        turbulence: turbulence.map(|t| flick::Turbulence {
+            rms: t.rms,
+            bandwidth: t.hz,
+            seed: 1,
+        }),
+    };
     let (slew, jerk) = target_limits(&gains);
-    let (slew, jerk) = (
-        value!(slew, rot / s ^ 2, f32) as f64,
-        value!(jerk, rot / s ^ 3, f32) as f64,
-    );
+    let (slew, jerk): (AngAccel, AngJerk) = (slew.lossy_into(), jerk.lossy_into());
     let flicks = (0..3)
-        .map(|axis| {
-            let amp = Rate::new(rates[axis]);
-            let rise = Time::new(limit_rise_s(rates[axis], slew, jerk));
-            let f = flick::measure_with(
-                &gains,
+        .flat_map(|axis| [(axis, 1.0), (axis, -1.0)])
+        .map(|(axis, direction)| {
+            let amp = direction * rates[axis];
+            let fastest = limit_rise(rates[axis], slew, jerk);
+            let rise = min_rise.map_or(fastest, |min| fastest.max(rescale(min)));
+            let f = flick::measure(
+                flown,
                 &model,
                 axis,
                 amp,
                 rise,
                 flick::Limits::default(),
-                noise.as_ref(),
+                &flick_conditions,
             );
             let m = f.metrics;
             let saturated = f
@@ -1079,63 +1488,99 @@ fn fly_flicks(
                 .collect();
             FlickResult {
                 axis: ["roll", "pitch", "yaw"][axis].to_string(),
-                rise_ms: ms(rise),
-                amp: value!(amp, rot / s),
+                rise_ms: rescale(rise),
+                limit_rise_ms: rescale(fastest),
+                amp,
                 metrics: FlickMetrics {
                     target_ovs: m.target_ovs,
-                    target_lag_ms: ms(m.target_lag),
-                    gyro_lag_ms: ms(m.gyro_lag),
-                    rise90_ms: Some(ms(m.rise90)).filter(|t| t.is_finite()),
+                    target_lag_ms: rescale(m.target_lag),
+                    gyro_lag_ms: rescale(m.gyro_lag),
+                    rise90_ms: Some(m.rise90)
+                        .filter(|t| value!(*t, s).is_finite())
+                        .map(rescale),
                     overshoot: m.overshoot,
                     hold_err: m.hold_err,
                     track_rms: m.track_rms,
                     residual: m.residual,
                     sat_frac: m.sat_frac,
-                    rough_v: m.rough_v.map(|v| value!(v, V)),
+                    rough_v: m.rough_v,
                 },
-                stick: thin(rps(&f.run.stick)),
-                setpoint: thin(rps(&f.run.setpoint)),
-                target: thin(rps(&f.run.target)),
-                response: thin(rps(&f.response)),
+                stick: thin(&f.run.stick),
+                setpoint: thin(&f.run.setpoint),
+                target: thin(&f.run.target),
+                response: thin(&f.response),
                 saturated,
                 volts: std::array::from_fn(|m| {
-                    thin(f.run.volts.iter().map(|v| value!(v[m], V) as f32).collect())
+                    f.run.volts.iter().step_by(stride).map(|v| v[m].lossy_into()).collect()
+                }),
+                motor_speeds: std::array::from_fn(|m| {
+                    f.run.motor_speeds.iter().step_by(stride).map(|w| w[m].lossy_into()).collect()
                 }),
             }
         })
         .collect();
+    let flown = |delay: Time| rescale(whippyflight_sim::plant::DelayLine::<()>::flown(delay, loop_dt));
     Ok(FlickReport {
-        version: 7,
+        version: 18,
         fit,
+        min_rise_ms: min_rise,
+        feedback,
+        conditions,
+        latency: Latency {
+            actuator_ms: flown(model.actuator_delay),
+            telemetry_ms: flown(model.telemetry_delay),
+        },
+        noise_rms: noise.as_ref().map(|n| NoiseRms::of(n, gyro_scale, motor_scale)),
+        turbulence,
+        gyro_filtered,
         loop_dt,
         trace_dt: loop_dt * stride as f64,
-        hold_s: value!(flick::HOLD, s),
+        hold_s: flick::HOLD,
         slew,
         jerk,
         rates_from,
         stick_tracking: model.stick_tracking,
         stick_tracking_from: stick_tracking_from.into(),
+        motor_lpf_hz: model.motor_lpf,
+        motor_lpf_from: motor_lpf_from.into(),
         bf_rough_v,
         hover_rough_v,
         delay_margin_ms,
-        max_margin_ms: value!(margin::MAX_MARGIN, ms),
+        max_margin_ms: margin::MAX_MARGIN,
         trim_deg,
         flicks,
     })
 }
 
-/// Fly the computed gains through a full-stick flick per axis on the plant of
-/// the fit they came from; writes and returns `gains/flicks.json`.
-/// `stick_tracking` overrides the λ the fit's logs were flown with.
+/// Fly the computed gains through a full-stick flick each way per axis on the
+/// plant of the fit they came from; writes and returns `gains/flicks.json`.
+/// `stick_tracking` and `motor_lpf_hz` override the λ and the motor-speed
+/// low-pass (0 for off) the fit's logs were flown with, and
+/// `min_rise_ms` slows sticks the target limits would allow faster, and
+/// `feedback` picks the feedback gains flown (all if None), in `conditions`
+/// (the defaults if None).
 #[tauri::command]
 pub async fn whippyflight_flicks(
     workdir: String,
     max_rates: Option<MaxRates>,
     stick_tracking: Option<f32>,
+    motor_lpf_hz: Option<f64>,
+    min_rise_ms: Option<f64>,
+    feedback: Option<FlickFeedback>,
+    conditions: Option<FlickConditions>,
 ) -> Result<FlickReport, String> {
     let dir = self::workdir(&workdir)?;
+    let min_rise = min_rise_ms.map(|ms| quantity!(ms, ms));
     tauri::async_runtime::spawn_blocking(move || {
-        let report = fly_flicks(&dir, max_rates, stick_tracking)?;
+        let report = fly_flicks(
+            &dir,
+            max_rates,
+            stick_tracking,
+            motor_lpf_hz.map(|hz| quantity!(hz, Hz)),
+            min_rise,
+            feedback.unwrap_or_default(),
+            conditions.unwrap_or_default(),
+        )?;
         let json = serde_json::to_vec(&report).map_err(|e| e.to_string())?;
         std::fs::write(dir.join(FLICKS), json).map_err(|e| e.to_string())?;
         Ok(report)
@@ -1147,36 +1592,46 @@ pub async fn whippyflight_flicks(
 /// front_wfg.py's `front.json`.
 #[derive(Deserialize)]
 struct FrontIndex {
-    dt: f64,
-    sigma_rate: f64,
+    #[serde(with = "plain")]
+    dt: Time,
+    #[serde(with = "plain")]
+    sigma_rate: Rate,
     /// Absent from fronts computed before these were recorded.
     #[serde(default)]
     resolution: Option<u8>,
-    #[serde(default)]
-    idle_rps: Option<f64>,
+    #[serde(default, with = "plain")]
+    idle_rps: Option<Rate>,
     points: Vec<FrontBlob>,
 }
 
 #[derive(Deserialize)]
 struct FrontBlob {
-    sigma_deriv: f64,
-    sigma_int: f64,
+    #[serde(with = "plain")]
+    sigma_deriv: AngAccel,
+    #[serde(with = "plain")]
+    sigma_int: Rate,
     wfg: String,
 }
 
 /// One point of a fit's front: its weights and what they trade (`sim::margin`).
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FrontPoint {
-    sigma_deriv: f64,
-    sigma_int: f64,
-    /// How long a roll knock takes to die out, ∫|rate| / knock, ms.
-    kick_iae_ms: f64,
-    /// Motor roughness the fit's sensor noise causes at hover, V; None without its noise.
-    rough_v: Option<f64>,
+    #[serde(with = "plain")]
+    sigma_deriv: AngAccel,
+    #[serde(with = "plain")]
+    sigma_int: Rate,
+    /// How long a roll knock takes to die out, ∫|rate| / knock.
+    #[serde(with = "plain")]
+    kick_iae_ms: Millis,
+    /// Motor roughness the fit's sensor noise causes at hover; None without its noise.
+    #[serde(with = "plain")]
+    rough_v: Option<Voltage>,
     /// As [`FlickReport::delay_margin_ms`].
-    delay_margin_ms: f64,
+    #[serde(with = "plain")]
+    delay_margin_ms: Millis,
     /// As [`FlickReport::trim_deg`].
-    trim_deg: f64,
+    #[serde(with = "plain")]
+    trim_deg: Degrees,
 }
 
 /// `fits/<fit>/front/scores.json`.
@@ -1185,17 +1640,21 @@ pub struct FrontReport {
     version: u32,
     fit: String,
     /// The loop period and σ_rate every point's gains were computed for.
-    dt: f64,
-    sigma_rate: f64,
+    #[serde(with = "plain")]
+    dt: Time,
+    #[serde(with = "plain")]
+    sigma_rate: Rate,
     /// The [`Grid`] they were scheduled over; None if the front predates recording it.
     #[serde(default)]
     resolution: Option<u8>,
-    #[serde(default)]
-    idle_rps: Option<f64>,
+    #[serde(default, with = "plain")]
+    idle_rps: Option<Rate>,
     /// Whether the fit's gyro filters were modeled; the measures are without them if not.
     gyro_filters: bool,
-    max_margin_ms: f64,
-    bf_rough_v: Option<f64>,
+    #[serde(with = "plain")]
+    max_margin_ms: Millis,
+    #[serde(with = "plain")]
+    bf_rough_v: Option<Voltage>,
     points: Vec<FrontPoint>,
 }
 
@@ -1207,8 +1666,7 @@ fn front_index(dir: &Path, fit: &str) -> Result<(PathBuf, FrontIndex), String> {
 }
 
 fn score_front(dir: &Path, fit: &str) -> Result<FrontReport, String> {
-    use whippyflight_control::sim::margin;
-    use whippyunits::value;
+    use whippyflight_sim::margin;
 
     let (front, index) = front_index(dir, fit)?;
     let model = fit_model(dir, fit)?;
@@ -1221,12 +1679,12 @@ fn score_front(dir: &Path, fit: &str) -> Result<FrontReport, String> {
         Ok(FrontPoint {
             sigma_deriv: blob.sigma_deriv,
             sigma_int: blob.sigma_int,
-            kick_iae_ms: value!(margin::kick_iae(&gains, &model, &cutoffs), ms),
+            kick_iae_ms: margin::kick_iae(&gains, &model, &cutoffs),
             rough_v: noise
                 .as_ref()
-                .map(|n| value!(margin::hover_roughness(&gains, &model, &cutoffs, n), V)),
-            delay_margin_ms: value!(margin::delay_margin(&gains, &model, &cutoffs), ms),
-            trim_deg: value!(margin::trim(&gains, &model, &cutoffs).0, deg),
+                .map(|n| margin::hover_roughness(&gains, &model, &cutoffs, n)),
+            delay_margin_ms: margin::delay_margin(&gains, &model, &cutoffs),
+            trim_deg: rescale(margin::trim(&gains, &model, &cutoffs).0),
         })
     };
     let workers = thread::available_parallelism().map_or(1, |n| n.get());
@@ -1256,7 +1714,7 @@ fn score_front(dir: &Path, fit: &str) -> Result<FrontReport, String> {
         resolution: index.resolution,
         idle_rps: index.idle_rps,
         gyro_filters,
-        max_margin_ms: value!(margin::MAX_MARGIN, ms),
+        max_margin_ms: margin::MAX_MARGIN,
         bf_rough_v,
         points,
     })
@@ -1328,6 +1786,8 @@ fn percent_decode(text: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    const ALL: FlickFeedback = FlickFeedback { p: true, i: true, d: true };
+
     #[test]
     fn resolves_only_pipeline_files() {
         let dir = Path::new("/w");
@@ -1380,22 +1840,46 @@ mod tests {
     }
 
     const WEIGHTS: Weights = Weights {
-        sigma_rate: 5.0,
-        sigma_deriv: 10.0,
-        sigma_int: 0.012,
+        sigma_rate: quantity!(5.0, rot / s),
+        sigma_deriv: quantity!(10.0, rot / s ^ 2),
+        sigma_int: quantity!(0.012, rot / s),
     };
 
     const GRID: Grid = Grid {
         resolution: 3,
-        idle_rps: 0.0,
+        idle_rps: quantity!(0.0, rot / s),
     };
+
+    #[test]
+    fn parses_webview_jobs() {
+        let job: Job = serde_json::from_str(
+            r#"{"kind": "gen", "dt": 3.125e-4, "fit": "a", "grid": {"resolution": 4, "idleRps": 180},
+                "weights": {"sigmaRate": 5, "sigmaDeriv": 15, "sigmaInt": 0.012}}"#,
+        )
+        .unwrap();
+        let Job::Gen { dt, weights, grid, .. } = job else {
+            panic!("not a gen job");
+        };
+        assert_eq!(dt, Some(quantity!(3.125e-4, s)));
+        assert_eq!(weights.sigma_deriv, quantity!(15.0, rot / s ^ 2));
+        assert_eq!(grid.idle_rps, quantity!(180.0, rot / s));
+        let job: Job = serde_json::from_str(
+            r#"{"kind": "front", "dt": null, "fit": "a", "sigmaRate": 5,
+                "grid": {"resolution": 4, "idleRps": 0}}"#,
+        )
+        .unwrap();
+        assert!(matches!(job, Job::Front { dt: None, .. }));
+        let rates: MaxRates = serde_json::from_str(r#"{"rps": [2, 1.5, 1], "from": "fc"}"#).unwrap();
+        assert_eq!(rates.rps[1], quantity!(1.5, rot / s));
+        assert!(serde_json::from_str::<MaxRates>(r#"{"rps": [2, 1.5], "from": "fc"}"#).is_err());
+    }
 
     #[test]
     fn grid_args_are_checked() {
         assert_eq!(
             grid_args(&Grid {
                 resolution: 4,
-                idle_rps: 130.0
+                idle_rps: quantity!(130.0, rot / s)
             })
             .unwrap(),
             ["--resolution", "4", "--idle-rps", "1.3e2"]
@@ -1410,11 +1894,11 @@ mod tests {
                 ..GRID
             },
             Grid {
-                idle_rps: -1.0,
+                idle_rps: quantity!(-1.0, rot / s),
                 ..GRID
             },
             Grid {
-                idle_rps: f64::NAN,
+                idle_rps: quantity!(f64::NAN, rot / s),
                 ..GRID
             },
         ] {
@@ -1422,14 +1906,14 @@ mod tests {
         }
     }
 
-    /// Runs the real scripts: WHIPPYFLIGHT_PYTHON, WHIPPYFLIGHT_TOOLS and WHIPPYFLIGHT_LOG (a .bbl).
+    /// Runs the real tools: WHIPPYFLIGHT_PYTHON (with the whippyflight packages) and
+    /// WHIPPYFLIGHT_LOG (a .bbl).
     #[test]
     #[ignore]
     fn fits_and_generates_gains() {
         let env = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} not set"));
         let toolchain = Toolchain {
             python: env("WHIPPYFLIGHT_PYTHON"),
-            tools_dir: env("WHIPPYFLIGHT_TOOLS"),
         };
         let dir = std::env::temp_dir().join(format!("whippyflight-test-{}", std::process::id()));
         std::fs::create_dir_all(dir.join(LOGS_DIR)).unwrap();
@@ -1468,16 +1952,16 @@ mod tests {
             },
         ];
         for job in &jobs {
-            let args = job_args(&toolchain, &dir, job).unwrap();
+            let args = job_args(&dir, job).unwrap();
             before_job(&dir, job);
             let status = python_command(&toolchain).args(args).status().unwrap();
             assert!(status.success());
             after_job(&dir, job).unwrap();
         }
-        let report = fly_flicks(&dir, None, None).unwrap();
+        let report = fly_flicks(&dir, None, None, None, None, ALL, FlickConditions::default()).unwrap();
         std::fs::write(dir.join(FLICKS), serde_json::to_vec(&report).unwrap()).unwrap();
         let status = python_command(&toolchain)
-            .args(job_args(&toolchain, &dir, &Job::FlickPlots).unwrap())
+            .args(job_args(&dir, &Job::FlickPlots).unwrap())
             .status()
             .unwrap();
         assert!(status.success());
@@ -1498,7 +1982,7 @@ mod tests {
         assert!(ws.flick_plots.contains(&"flicks.png".to_string()));
         let fit = &ws.fits[0];
         assert!(
-            fit.id == "flight_1" && fit.has_coefficients && fit.has_diagnostics && fit.has_noise
+            fit.id == "flight_1" && fit.has_coefficients && fit.has_diagnostics && fit.has_noise && fit.noise_rms.is_some()
         );
         assert!(report.bf_rough_v.is_some());
         assert!(report.flicks.iter().all(|f| f.metrics.rough_v.is_some()));
@@ -1519,7 +2003,7 @@ mod tests {
         assert_eq!(front.sigma_rate, WEIGHTS.sigma_rate);
         assert_eq!(front.resolution, Some(GRID.resolution));
         assert_eq!(front.idle_rps, Some(GRID.idle_rps));
-        let at = |deriv: f64, int: f64| {
+        let at = |(deriv, int): (AngAccel, Rate)| {
             front
                 .points
                 .iter()
@@ -1532,15 +2016,16 @@ mod tests {
         }
         // Stiffer rejects a knock faster and is rougher; a firmer integral holds
         // attitude closer and costs delay margin.
-        let (stiff, smooth) = (p(at(5.0, 0.012)), p(at(30.0, 0.012)));
+        let sigmas = |deriv: f64, int: f64| (quantity!(deriv, rot / s ^ 2), quantity!(int, rot / s));
+        let (stiff, smooth) = (p(at(sigmas(5.0, 0.012))), p(at(sigmas(30.0, 0.012))));
         assert!(stiff.kick_iae_ms < smooth.kick_iae_ms);
         assert!(stiff.rough_v.unwrap() > smooth.rough_v.unwrap());
-        let (firm, loose) = (p(at(15.0, 0.004)), p(at(15.0, 0.05)));
+        let (firm, loose) = (p(at(sigmas(15.0, 0.004))), p(at(sigmas(15.0, 0.05))));
         assert!(firm.trim_deg < loose.trim_deg);
         assert!(firm.delay_margin_ms < loose.delay_margin_ms);
 
         // The front's gains at the Gen job's weights are the Gen job's.
-        let mine = at(WEIGHTS.sigma_deriv, WEIGHTS.sigma_int);
+        let mine = at((WEIGHTS.sigma_deriv, WEIGHTS.sigma_int));
         let generated = std::fs::read(dir.join(GAINS)).unwrap();
         std::fs::write(dir.join(GAINS), b"stale").unwrap();
         whippyflight_use_front(dir.to_string_lossy().into_owned(), "flight_1".into(), mine)
@@ -1561,16 +2046,14 @@ mod tests {
     /// The controller crate's committed test gains, flown on the plant they were computed for.
     #[test]
     fn flies_committed_gains() {
-        let tools = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../whippyflight-bf/src/main/flight/whippyflight/tools");
+        let tools = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../whippyflight/fixtures");
         let dir = std::env::temp_dir().join(format!("whippyflight-flicks-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("fits/meteor")).unwrap();
         std::fs::create_dir_all(dir.join("gains")).unwrap();
-        std::fs::copy(
-            tools.join("airframes/meteor65.json"),
-            dir.join("fits/meteor").join(COEFFICIENTS),
-        )
-        .unwrap();
+        let mut coefficients: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(tools.join("airframes/meteor65.json")).unwrap()).unwrap();
+        coefficients["latency"] = serde_json::json!({"actuator_ms": 0.31, "telemetry_ms": 3.23});
+        std::fs::write(dir.join("fits/meteor").join(COEFFICIENTS), coefficients.to_string()).unwrap();
         std::fs::copy(tools.join("test_gains.wfg"), dir.join(GAINS)).unwrap();
         std::fs::write(dir.join(GAINS_FIT), "meteor").unwrap();
         std::fs::copy(
@@ -1580,49 +2063,158 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.join("fits/meteor").join(NOISE_INFO),
-            r#"{"bf_rough_v": 0.048}"#,
+            r#"{"bf_rough_v": 0.048, "motor_noise_speed": {"reference_rps": 400.0, "exponent": 0.6}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("fits/meteor").join(DIAGNOSTICS),
+            r#"{"turbulence": {"roll": {"rms": 2.0, "hz": 4.0}, "pitch": {"rms": 1.0, "hz": 2.0}, "yaw": {"rms": 0.0, "hz": 6.0}}}"#,
         )
         .unwrap();
 
         let started = std::time::Instant::now();
-        let report = fly_flicks(
-            &dir,
+        let rates = || {
             Some(MaxRates {
-                rps: [2.0, 1.5, 1.0],
+                rps: [2.0, 1.5, 1.0].map(|r| quantity!(r, rot / s)),
                 from: "fc".into(),
-            }),
-            None,
-        )
-        .unwrap();
-        eprintln!("3 flicks in {:?}", started.elapsed());
+            })
+        };
+        let report = fly_flicks(&dir, rates(), None, None, None, ALL, FlickConditions::default()).unwrap();
+        eprintln!("6 flicks in {:?}", started.elapsed());
         // The panel's stick tracking replaces the logs'.
-        let retracked = fly_flicks(&dir, None, Some(1.0)).unwrap();
-        assert!(fly_flicks(&dir, None, Some(0.0)).is_err());
+        let retracked = fly_flicks(&dir, None, Some(1.0), None, None, ALL, FlickConditions::default()).unwrap();
+        assert!(fly_flicks(&dir, None, Some(0.0), None, None, ALL, FlickConditions::default()).is_err());
+        // So does its motor-speed low-pass.
+        let refiltered = fly_flicks(&dir, None, None, Some(quantity!(20.0, Hz)), None, ALL, FlickConditions::default()).unwrap();
+        assert!(fly_flicks(&dir, None, None, Some(quantity!(-1.0, Hz)), None, ALL, FlickConditions::default()).is_err());
+        // A slower stick than the limits need slows every flick to it.
+        let slowed = fly_flicks(&dir, rates(), None, None, Some(quantity!(150.0, ms)), ALL, FlickConditions::default()).unwrap();
+        assert!(fly_flicks(&dir, None, None, None, Some(quantity!(0.0, ms)), ALL, FlickConditions::default()).is_err());
+        // Feedforward alone: other flights, the same gains' margins.
+        let none = FlickFeedback { p: false, i: false, d: false };
+        let open_loop = fly_flicks(&dir, rates(), None, None, None, none, FlickConditions::default()).unwrap();
+        // Proportional alone: neither the full gains' flights nor the feedforward's.
+        let p_only = FlickFeedback { p: true, ..none };
+        let proportional = fly_flicks(&dir, rates(), None, None, None, p_only, FlickConditions::default()).unwrap();
+        let rough = FlickConditions {
+            gyro_noise_rms: Some(quantity!(0.005, rot / s)),
+            motor_noise: false,
+            motor_speed_noise_rms: Some(quantity!(1.0, rot / s)),
+            noisy_flights: true,
+            cg_shift_pct: [0.0, 5.0],
+            turbulence: true,
+            ..FlickConditions::default()
+        };
+        let disturbed = fly_flicks(&dir, rates(), None, None, None, ALL, rough).unwrap();
+        let set = FlickConditions {
+            turbulence_rms: Some([quantity!(0.3, rot / s ^ 2); 3]),
+            turbulence_hz: Some(quantity!(8.0, Hz)),
+            ..rough
+        };
+        let set_turbulence = fly_flicks(&dir, rates(), None, None, None, ALL, set).unwrap().turbulence;
+        let calm = FlickConditions { turbulence: false, ..set };
+        assert_eq!(fly_flicks(&dir, rates(), None, None, None, ALL, calm).unwrap().turbulence, None);
+        let bad = FlickConditions { turbulence_hz: Some(quantity!(0.0, Hz)), ..FlickConditions::default() };
+        assert!(fly_flicks(&dir, rates(), None, None, None, ALL, bad).is_err());
+        // The conditions' delays replace the fit's, margins included.
+        let late = FlickConditions {
+            actuator_delay_ms: Some(quantity!(3.0, ms)),
+            telemetry_delay_ms: Some(quantity!(0.0, ms)),
+            ..FlickConditions::default()
+        };
+        let delayed = fly_flicks(&dir, rates(), None, None, None, ALL, late).unwrap();
+        let bad = FlickConditions { actuator_delay_ms: Some(quantity!(25.0, ms)), ..FlickConditions::default() };
+        assert!(fly_flicks(&dir, rates(), None, None, None, ALL, bad).is_err());
+        let fitted = fit_latency(&dir.join("fits/meteor")).expect("the fit's latency");
         std::fs::remove_dir_all(&dir).unwrap();
+
+        let tick: Millis = rescale(report.loop_dt);
+        let near = |a: Millis, b: Millis| (a - b).abs() <= 0.5 * tick;
+        assert_eq!(fitted.telemetry_ms, quantity!(3.23, ms));
+        assert!(near(report.latency.actuator_ms, fitted.actuator_ms) && near(report.latency.telemetry_ms, fitted.telemetry_ms));
+        assert!(near(delayed.latency.actuator_ms, quantity!(3.0, ms)));
+        assert_eq!(delayed.latency.telemetry_ms, quantity!(0.0, ms));
+        assert_ne!(delayed.flicks[0].response, report.flicks[0].response);
+        assert!(delayed.delay_margin_ms < report.delay_margin_ms, "the motors' delay eats the margin");
+
+        assert_eq!((report.feedback, open_loop.feedback, proportional.feedback), (ALL, none, p_only));
+        assert_ne!(open_loop.flicks[0].response, report.flicks[0].response);
+        assert_ne!(proportional.flicks[0].response, report.flicks[0].response);
+        assert_ne!(proportional.flicks[0].response, open_loop.flicks[0].response);
+        assert_eq!(open_loop.delay_margin_ms, report.delay_margin_ms);
+        assert_eq!(report.conditions, FlickConditions::default());
+        assert_eq!(disturbed.conditions, rough);
+        let logged = report.noise_rms.expect("flown with noise");
+        assert!(value!(logged.gyro, rot / s) > 0.0 && value!(logged.motor, rot / s) > 0.0);
+        assert_eq!(logged.motor_speed_exponent, Some(0.6), "noise.json's speed law");
+        let asked = disturbed.noise_rms.expect("flown with noise");
+        assert!((value!(asked.gyro, rot / s) - 0.005).abs() < 1e-6);
+        assert_eq!(value!(asked.motor, rot / s), 0.0);
+        assert_eq!(report.turbulence, None);
+        let logged = disturbed.turbulence.expect("seeded from the diagnostics");
+        assert!((value!(logged.rms[0], rot / s ^ 2) - 2.0).abs() < 1e-9);
+        assert!((value!(logged.hz, Hz) - 3.6).abs() < 1e-9, "power-weighted corner");
+        let set_turbulence = set_turbulence.expect("set");
+        assert_eq!(value!(set_turbulence.hz, Hz), 8.0);
+        assert!((value!(set_turbulence.rms[2], rot / s ^ 2) - 0.3).abs() < 1e-12);
+        assert!(report.gyro_filtered);
+        assert_ne!(disturbed.flicks[0].response, report.flicks[0].response);
+        assert_eq!(disturbed.delay_margin_ms, report.delay_margin_ms);
 
         assert_eq!(report.stick_tracking_from, "log");
         assert_ne!(report.stick_tracking, 1.0);
         assert_eq!(retracked.stick_tracking_from, "fc");
         assert_eq!(retracked.stick_tracking, 1.0);
         assert_ne!(retracked.flicks[0].setpoint, report.flicks[0].setpoint);
+        assert_eq!(report.motor_lpf_from, "log");
+        assert_eq!(refiltered.motor_lpf_from, "fc");
+        assert_eq!(value!(refiltered.motor_lpf_hz, Hz), 20.0);
+        assert_ne!(refiltered.motor_lpf_hz, report.motor_lpf_hz);
+        assert_ne!(refiltered.flicks[0].response, report.flicks[0].response);
 
         assert_eq!(report.fit, "meteor");
-        assert!(report.rates_from == "fc" && report.slew > 0.0 && report.jerk > 0.0);
-        assert_eq!(report.bf_rough_v, Some(0.048));
+        assert!(
+            report.rates_from == "fc"
+                && report.slew > quantity!(0.0, rot / s ^ 2)
+                && report.jerk > quantity!(0.0, rot / s ^ 3)
+        );
+        assert_eq!(report.bf_rough_v, Some(quantity!(0.048, V)));
         let hover = report.hover_rough_v.expect("flown with noise");
-        eprintln!("hover roughness {hover} V");
-        assert!(hover > 0.0 && hover < 0.048);
+        eprintln!("hover roughness {} V", value!(hover, V));
+        assert!(hover > quantity!(0.0, V) && hover < quantity!(0.048, V));
         eprintln!(
             "delay margin {:?} ms, trim {:?}°",
-            report.delay_margin_ms, report.trim_deg
+            report.delay_margin_ms.map(|m| value!(m, ms)),
+            report.trim_deg.map(|t| value!(t, deg))
         );
-        assert!(report.trim_deg.is_some_and(|t| t > 0.0 && t < 45.0));
-        assert!(report.delay_margin_ms.is_some_and(|m| m > 0.0));
-        assert!(report.trace_dt >= FLICK_TRACE_DT_S * 0.5);
+        assert!(report
+            .trim_deg
+            .is_some_and(|t| t > quantity!(0.0, deg) && t < quantity!(45.0, deg)));
+        assert!(report.delay_margin_ms.is_some_and(|m| m > quantity!(0.0, ms)));
+        assert!(report.trace_dt >= 0.5 * FLICK_TRACE_DT);
         assert_eq!(
-            report.flicks.iter().map(|f| f.amp).collect::<Vec<_>>(),
-            [2.0, 1.5, 1.0]
+            report.flicks.iter().map(|f| value!(f.amp, rot / s)).collect::<Vec<_>>(),
+            [2.0, -2.0, 1.5, -1.5, 1.0, -1.0]
         );
+        assert_eq!(slowed.min_rise_ms, Some(quantity!(150.0, ms)));
+        for (fast, slow) in report.flicks.iter().zip(&slowed.flicks) {
+            assert_eq!(fast.rise_ms, fast.limit_rise_ms);
+            assert!(fast.limit_rise_ms < quantity!(150.0, ms));
+            assert_eq!(slow.rise_ms, quantity!(150.0, ms));
+            assert_eq!(slow.limit_rise_ms, fast.limit_rise_ms);
+        }
+        // The JSON carries bare numbers in the fields' units.
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["bf_rough_v"], 0.048);
+        assert_eq!(json["max_margin_ms"], value!(whippyflight_sim::margin::MAX_MARGIN, ms));
+        assert_eq!(json["hold_s"], value!(whippyflight_sim::flick::HOLD, s));
+        assert_eq!(json["flicks"][3]["amp"], -1.5);
+        assert!(json["flicks"][0]["rise_ms"].as_f64().is_some_and(|t| t > 1.0));
+        assert!(json["flicks"][0]["volts"][3][0].as_f64().is_some_and(|v| v > 0.0));
+        let speeds = &json["flicks"][0]["motor_speeds"];
+        assert_eq!(speeds[3].as_array().map(Vec::len), json["flicks"][0]["volts"][3].as_array().map(Vec::len));
+        assert!(speeds[3][0].as_f64().is_some_and(|w| w > 0.0), "hovering, in rot/s");
+        assert!(serde_json::from_value::<FlickReport>(json).is_ok());
         for f in &report.flicks {
             let n = f.response.len();
             assert!(
@@ -1638,7 +2230,12 @@ mod tests {
                 .all(|&m| m == n)
             );
             let m = &f.metrics;
-            eprintln!("{} {} rot/s over {:.1} ms: {m:?}", f.axis, f.amp, f.rise_ms);
+            eprintln!(
+                "{} {} rot/s over {:.1} ms: {m:?}",
+                f.axis,
+                value!(f.amp, rot / s),
+                value!(f.rise_ms, ms)
+            );
             // Within the limits the target stays close behind the stick.
             assert!(
                 m.target_lag_ms < 0.25 * f.rise_ms && m.target_ovs.abs() < 0.03,
@@ -1647,7 +2244,12 @@ mod tests {
             );
             assert!(m.rise90_ms.is_some() && m.hold_err.abs() < 0.1);
             let rough = m.rough_v.expect("flown with noise");
-            assert!(rough > 0.0 && rough < 1.0, "{} roughness {rough} V", f.axis);
+            assert!(
+                rough > quantity!(0.0, V) && rough < quantity!(1.0, V),
+                "{} roughness {} V",
+                f.axis,
+                value!(rough, V)
+            );
         }
     }
 

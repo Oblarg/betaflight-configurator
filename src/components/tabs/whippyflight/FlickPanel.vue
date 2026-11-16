@@ -3,6 +3,16 @@
         <p v-if="report.rates_from === 'default'" class="text-sm text-warning">
             {{ $t("whippyflightFlickDefaultRates") }}
         </p>
+        <p v-if="zeroed.length" class="text-sm text-warning">
+            {{
+                zeroed.length === FEEDBACK_TERMS.length
+                    ? $t("whippyflightFlickFeedforwardOnlyFlown")
+                    : $t("whippyflightFlickFeedbackFlown", { terms: zeroed.join(", ") })
+            }}
+        </p>
+        <p v-if="report.conditions.gyro_filter && !report.gyro_filtered" class="text-sm text-warning">
+            {{ $t("whippyflightFlickGyroFilterUnmodeled") }}
+        </p>
 
         <div class="flex flex-wrap gap-x-6 gap-y-1 text-sm">
             <span
@@ -11,6 +21,18 @@
             >
                 <span class="text-dimmed">{{ $t("whippyflightFlickMargin") }}</span>
                 <span class="tabular-nums" :class="marginLow ? 'text-warning' : ''">{{ margin }}</span>
+            </span>
+            <span class="flex gap-1" :title="$t('whippyflightFlickDelayHint')">
+                <span class="text-dimmed">{{ $t("whippyflightFlickDelay") }}</span>
+                <span class="tabular-nums">{{
+                    $t("whippyflightFlickDelayFlown", {
+                        actuator: report.latency.actuator_ms.toFixed(2),
+                        telemetry: report.latency.telemetry_ms.toFixed(2),
+                    })
+                }}</span>
+                <span class="text-dimmed">{{
+                    $t(delaysSet ? "whippyflightFlickDelaySetShort" : "whippyflightFlickDelayFitShort")
+                }}</span>
             </span>
             <span class="flex gap-1" :title="$t('whippyflightFlickTrimHint')">
                 <span class="text-dimmed">{{ $t("whippyflightFlickTrim") }}</span>
@@ -24,6 +46,19 @@
                 <span class="text-dimmed">{{
                     $t(
                         report.stick_tracking_from === "fc"
+                            ? "whippyflightFlickStickTrackingFc"
+                            : "whippyflightFlickStickTrackingLog",
+                    )
+                }}</span>
+            </span>
+            <span class="flex gap-1" :title="$t('whippyflightFlickMotorLpfHint')">
+                <span class="text-dimmed">{{ $t("whippyflightFlickMotorLpf") }}</span>
+                <span class="tabular-nums">{{
+                    report.motor_lpf_hz ? `${report.motor_lpf_hz} Hz` : $t("whippyflightOff")
+                }}</span>
+                <span class="text-dimmed">{{
+                    $t(
+                        report.motor_lpf_from === "fc"
                             ? "whippyflightFlickStickTrackingFc"
                             : "whippyflightFlickStickTrackingLog",
                     )
@@ -46,6 +81,9 @@
             <thead>
                 <tr class="text-xs text-dimmed text-left">
                     <th class="font-normal py-1">{{ $t("whippyflightFlickAxis") }}</th>
+                    <th class="font-normal" :title="$t('whippyflightFlickStickRiseHint')">
+                        {{ $t("whippyflightFlickStickRise") }}
+                    </th>
                     <th class="font-normal">{{ $t("whippyflightFlickTargetLag") }}</th>
                     <th class="font-normal">{{ $t("whippyflightFlickControllerLag") }}</th>
                     <th class="font-normal">{{ $t("whippyflightFlickOvershoot") }}</th>
@@ -58,12 +96,15 @@
             <tbody>
                 <tr
                     v-for="f in report.flicks"
-                    :key="f.axis"
+                    :key="key(f)"
                     class="tabular-nums cursor-pointer hover:bg-elevated"
                     :class="{ 'bg-elevated font-semibold': f === flick }"
-                    @click="selected = f.axis"
+                    @click="selected = key(f)"
                 >
-                    <td class="py-1">{{ $t(`whippyflightAxis_${f.axis}`) }}, {{ degrees(f.amp) }}°/s</td>
+                    <td class="py-1">{{ direction(f) }}, {{ rate(f.amp) }} rot/s</td>
+                    <td :class="f.rise_ms > f.limit_rise_ms + 0.5 ? '' : 'text-dimmed'">
+                        {{ f.rise_ms.toFixed(0) }} ms
+                    </td>
                     <td>{{ f.metrics.target_lag_ms.toFixed(1) }} ms</td>
                     <td>{{ controllerLagMs(f.metrics).toFixed(1) }} ms</td>
                     <td>{{ percent(f.metrics.overshoot) }}</td>
@@ -80,7 +121,7 @@
         <div v-if="flick" class="grid gap-3 grid-cols-1 lg:grid-cols-3">
             <FlickChart
                 v-for="part in parts(flick)"
-                :key="`${flick.axis}-${part.title}`"
+                :key="`${key(flick)}-${part.title}`"
                 :title="part.title"
                 :x-label="$t('whippyflightFlickTime')"
                 :dt="report.trace_dt"
@@ -88,16 +129,18 @@
                 :saturated="flick.saturated"
                 :span="part.span"
             />
-            <FlickChart
-                v-for="(part, i) in parts(flick)"
-                :key="`${flick.axis}-motors-${part.title}`"
-                :title="motorTitles[i]"
-                :x-label="$t('whippyflightFlickTime')"
-                :dt="report.trace_dt"
-                :lines="motorLines(flick)"
-                :saturated="flick.saturated"
-                :span="part.span"
-            />
+            <template v-for="row in motorRows" :key="row.name">
+                <FlickChart
+                    v-for="(part, i) in parts(flick)"
+                    :key="`${key(flick)}-${row.name}-${part.title}`"
+                    :title="partTitle(row.name, i)"
+                    :x-label="$t('whippyflightFlickTime')"
+                    :dt="report.trace_dt"
+                    :lines="row.lines"
+                    :saturated="flick.saturated"
+                    :span="part.span"
+                />
+            </template>
         </div>
         <p class="text-xs text-dimmed">
             {{ report.hover_rough_v === null ? $t("whippyflightFlickNoNoise") : $t("whippyflightFlickRoughnessNote") }}
@@ -112,13 +155,13 @@
 import { computed, ref } from "vue";
 import { useTranslation } from "i18next-vue";
 import FlickChart, { type FlickLine } from "./FlickChart.vue";
-import { controllerLagMs, type FlickAxis, type FlickReport, type FlickResult } from "@/js/whippyflight/flicks";
+import { controllerLagMs, FEEDBACK_TERMS, type FlickReport, type FlickResult } from "@/js/whippyflight/flicks";
 
 const props = defineProps<{ report: FlickReport }>();
 
 const { t } = useTranslation();
-const selected = ref<FlickAxis>("roll");
-const flick = computed(() => props.report.flicks.find((f) => f.axis === selected.value) ?? props.report.flicks[0]);
+const selected = ref("roll+");
+const flick = computed(() => props.report.flicks.find((f) => key(f) === selected.value) ?? props.report.flicks[0]);
 const STICK_COLOR = "var(--chart-reference-color)";
 const TARGET_COLOR = "var(--color-axis-yaw)";
 const RESPONSE_COLOR = "var(--color-axis-pitch)";
@@ -136,12 +179,36 @@ const margin = computed(() => {
     }
     return `${ms >= props.report.max_margin_ms ? "≥ " : ""}${ms.toFixed(1)} ms`;
 });
+/** Whether the conditions set either delay rather than the fit. */
+const delaysSet = computed(
+    () => props.report.conditions.actuator_delay_ms !== null || props.report.conditions.telemetry_delay_ms !== null,
+);
+/** The feedback gains zeroed for these flights, as P, I, D. */
+const zeroed = computed(() => FEEDBACK_TERMS.filter((t) => !props.report.feedback[t]).map((t) => t.toUpperCase()));
 const marginLow = computed(() => props.report.delay_margin_ms !== null && props.report.delay_margin_ms < LOW_MARGIN_MS);
-const motorTitles = computed(() => [
-    t("whippyflightFlickMotors"),
-    `${t("whippyflightFlickMotors")}, ${t("whippyflightFlickOnset").toLowerCase()}`,
-    `${t("whippyflightFlickMotors")}, ${t("whippyflightFlickRelease").toLowerCase()}`,
-]);
+/** The per-motor charts under the response: voltages, then shaft speeds. */
+const motorRows = computed(() => {
+    const f = flick.value;
+    return [
+        { name: t("whippyflightFlickMotors"), lines: motorLines(f.volts) },
+        { name: t("whippyflightFlickMotorSpeeds"), lines: motorLines(f.motor_speeds) },
+    ];
+});
+
+/** `name` for the whole flick, its onset (1) or its release (2). */
+function partTitle(name: string, part: number): string {
+    const parts = ["", "whippyflightFlickOnset", "whippyflightFlickRelease"];
+    return part ? `${name}, ${t(parts[part]).toLowerCase()}` : name;
+}
+
+/** Which way `f` went, as an axis and a sign: roll right, pitch up, yaw right are positive in FRD. */
+function key(f: FlickResult): string {
+    return `${f.axis}${f.amp < 0 ? "-" : "+"}`;
+}
+
+function direction(f: FlickResult): string {
+    return t(`whippyflightFlickDir_${f.axis}_${f.amp < 0 ? "neg" : "pos"}`);
+}
 
 function lines(f: FlickResult): FlickLine[] {
     return [
@@ -151,8 +218,8 @@ function lines(f: FlickResult): FlickLine[] {
     ];
 }
 
-function motorLines(f: FlickResult): FlickLine[] {
-    return f.volts.map((values, m) => ({
+function motorLines(motors: number[][]): FlickLine[] {
+    return motors.map((values, m) => ({
         values,
         color: MOTOR_COLORS[m],
         label: t("whippyflightFlickMotor", { n: m + 1 }),
@@ -161,7 +228,7 @@ function motorLines(f: FlickResult): FlickLine[] {
 
 /** The whole flick, then its onset and release up close (ms spans). */
 function parts(f: FlickResult): { title: string; span?: [number, number] }[] {
-    const title = t("whippyflightFlickTitle", { axis: t(`whippyflightAxis_${f.axis}`), dps: degrees(f.amp) });
+    const title = t("whippyflightFlickTitle", { axis: direction(f), rps: rate(f.amp) });
     const release = f.rise_ms + 1e3 * props.report.hold_s;
     const near = 1.6 * f.rise_ms + 30;
     return [
@@ -175,8 +242,8 @@ function millivolts(volts: number, digits = 0): string {
     return `${(1e3 * volts).toFixed(digits)} mV`;
 }
 
-function degrees(rps: number): string {
-    return (360 * rps).toFixed(0);
+function rate(rps: number): string {
+    return Math.abs(rps).toFixed(2);
 }
 
 function percent(ratio: number, signed = true): string {

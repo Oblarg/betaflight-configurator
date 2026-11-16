@@ -30,22 +30,29 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Diagnostics } from "./diagnostics";
-import { FLICKS_VERSION, type FlickReport, type MaxRates, type RatesSource } from "./flicks";
+import {
+    FLICKS_VERSION,
+    type FlickConditions,
+    type FlickFeedback,
+    type Latency,
+    type NoiseRms,
+    type TurbulenceSpec,
+    type FlickRatesSource,
+    type FlickReport,
+    type MaxRates,
+} from "./flicks";
 import type { Weights } from "./weights";
 import { FRONT_VERSION, type FrontReport } from "./front";
 
 export interface Toolchain {
-    /** Python interpreter with numpy, scipy, control and frccontrol. */
+    /** Python interpreter with the whippyflight and whippyflight_betaflight packages. */
     python: string;
-    /** Directory holding fit_model.py and gen_wfg.py. */
-    toolsDir: string;
 }
 
 export interface EnvReport {
     pythonVersion: string | null;
     missingModules: string[];
     hasMatplotlib: boolean;
-    missingScripts: string[];
 }
 
 export interface LogFile {
@@ -60,6 +67,12 @@ export interface FitRun {
     hasDiagnostics: boolean;
     /** Whether its sensor noise has been extracted (`noise.bin`), for motor roughness. */
     hasNoise: boolean;
+    /** Its sensor noise's RMS as logged; null without it. */
+    noiseRms: NoiseRms | null;
+    /** The turbulence its diagnostics measured; null without it. */
+    turbulence: TurbulenceSpec | null;
+    /** The latency it measured; null for a fit without it (flown as none). */
+    latency: Latency | null;
     /** Whether its Pareto front has been computed and scored ({@link scoreFront}). */
     hasFront: boolean;
     plots: string[];
@@ -244,16 +257,30 @@ export async function readFlicks(workdir: string): Promise<FlickReport | null> {
 }
 
 /**
- * Fly the computed gains through a full-stick flick per axis on the plant of the fit they came
- * from, to `maxRates` (Betaflight's defaults if null), with stick tracking `stickTracking` (the
- * fit's logged value if null); writes {@link FLICKS_FILE}.
+ * Fly the computed gains through a full-stick flick each way per axis on the plant of the fit they
+ * came from, to `maxRates` (Betaflight's defaults if null), with stick tracking `stickTracking`
+ * and motor-speed low-pass `motorLpfHz` (the fit's logged values if null) and sticks no faster than `minRiseMs` (as fast as the target
+ * limits allow if null), with the feedback gains `feedback` keeps (all if null), in `conditions`
+ * (the defaults if null); writes {@link FLICKS_FILE}.
  */
 export function flyFlicks(
     workdir: string,
-    maxRates: { rps: MaxRates; from: RatesSource } | null,
+    maxRates: { rps: MaxRates; from: FlickRatesSource } | null,
     stickTracking: number | null = null,
+    motorLpfHz: number | null = null,
+    minRiseMs: number | null = null,
+    feedback: FlickFeedback | null = null,
+    conditions: FlickConditions | null = null,
 ): Promise<FlickReport> {
-    return invoke<FlickReport>("whippyflight_flicks", { workdir, maxRates, stickTracking });
+    return invoke<FlickReport>("whippyflight_flicks", {
+        workdir,
+        maxRates,
+        stickTracking,
+        motorLpfHz,
+        minRiseMs,
+        feedback,
+        conditions,
+    });
 }
 
 /**

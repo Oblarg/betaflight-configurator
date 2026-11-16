@@ -144,6 +144,7 @@ dependencies = [
  "tokio",
  "uuid",
  "whippyflight-control",
+ "whippyflight-sim",
  "whippyunits",
 ]
 
@@ -5319,8 +5320,16 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "libm",
- "serde_json",
  "whippyalgebra",
+ "whippyunits",
+]
+
+[[package]]
+name = "whippyflight-sim"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "whippyflight-control",
  "whippyunits",
 ]
 

@@ -47,6 +47,8 @@ export enum GainLoadResult {
     MISALIGNED = 6,
     TOO_LARGE = 7,
     NO_STORE = 8,
+    BAD_LAYOUT = 9,
+    LAYOUT_MISMATCH = 10,
 }
 
 /** `wf_arming_check_e`: bits of the arming checks the controller fails. */

@@ -330,6 +330,16 @@ watch(
     { immediate: true },
 );
 
+// So is its motor-speed low-pass.
+watch(
+    () =>
+        loaded.value && has.value.motorLpfHz && Number.isFinite(draft.motorLpfHz)
+            ? Math.max(0, draft.motorLpfHz)
+            : null,
+    (hz) => (store.motorLpfHz = hz),
+    { immediate: true },
+);
+
 // Gains are computed for the idle speed entered here: their grid starts there.
 watch(
     () => (loaded.value && has.value.idleRps && Number.isFinite(draft.idleRps) ? Math.max(0, draft.idleRps) : null),
@@ -345,6 +355,7 @@ onMounted(() => {
 
 onUnmounted(() => {
     store.stickTracking = null;
+    store.motorLpfHz = null;
     store.idleRps = null;
 });
 </script>

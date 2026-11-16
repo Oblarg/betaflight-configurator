@@ -43,7 +43,16 @@ import {
     type Workspace,
 } from "@/js/whippyflight/pipeline";
 import type { Diagnostics } from "@/js/whippyflight/diagnostics";
-import type { FlickReport } from "@/js/whippyflight/flicks";
+import {
+    DEFAULT_FLICK_CONDITIONS,
+    DEFAULT_FLICK_FEEDBACK,
+    validFlickConditions,
+    validFlickFeedback,
+    type FlickConditions,
+    type FlickFeedback,
+    type FlickReport,
+    type ManualFlickRates,
+} from "@/js/whippyflight/flicks";
 import type { FrontReport } from "@/js/whippyflight/front";
 import type { GainBlobInfo } from "@/js/whippyflight/protocol";
 import { DEFAULT_WEIGHTS, type Weights } from "@/js/whippyflight/weights";
@@ -66,22 +75,69 @@ const COMMIT_TIMEOUT_MS = 60000;
 
 export interface WhippyFlightSettings {
     python: string;
-    toolsDir: string;
     workdir: string;
     drag: DragMode;
     weights: Weights;
     /** Speeds per motor of the gain grid. */
     resolution: GridResolution;
+    /** Flick rates set by hand; null to fly the rate profile's full-stick rates. */
+    flickRates: ManualFlickRates | null;
+    /** The slowest flick stick, ms; null for the fastest the setpoint target's limits allow. */
+    flickRiseMs: number | null;
+    /** The feedback gains the flicks fly with; those off are zeroed, to see what the rest does alone. */
+    flickFeedback: FlickFeedback;
+    /** What the flicks fly in besides the stick. */
+    flickConditions: FlickConditions;
+    /** The unit of the stored rates; settings without it hold them in degrees. */
+    rateUnit: "rot";
 }
 
 const DEFAULT_SETTINGS: WhippyFlightSettings = {
     python: "python3",
-    toolsDir: "",
     workdir: "",
     drag: "auto",
     weights: { ...DEFAULT_WEIGHTS },
     resolution: 3,
+    flickRates: null,
+    flickRiseMs: null,
+    flickFeedback: { ...DEFAULT_FLICK_FEEDBACK },
+    flickConditions: { ...DEFAULT_FLICK_CONDITIONS, cg_shift_pct: [0, 0] },
+    rateUnit: "rot",
 };
+
+/** `stored` with the rates of settings saved in degrees in rotations. */
+function inRotations(stored: Partial<WhippyFlightSettings>): Partial<WhippyFlightSettings> {
+    if (stored.rateUnit === "rot") {
+        return stored;
+    }
+    const rot = (x: unknown) => (typeof x === "number" ? x / 360 : x);
+    const rots = (xs: unknown) => (Array.isArray(xs) ? xs.map(rot) : xs);
+    const conditions = stored.flickConditions as Record<string, unknown> | undefined;
+    return {
+        ...stored,
+        flickRates: rots(stored.flickRates) as ManualFlickRates | null,
+        flickConditions:
+            conditions &&
+            ({
+                ...conditions,
+                gyro_noise_rms: rot(conditions.gyro_noise_rms),
+                turbulence_rms: rots(conditions.turbulence_rms),
+            } as unknown as FlickConditions),
+    };
+}
+
+function validFlickRates(rates: unknown): ManualFlickRates | null {
+    return Array.isArray(rates) && rates.length === 3 && rates.every((r) => Number.isFinite(r) && r > 0)
+        ? (rates as ManualFlickRates)
+        : null;
+}
+
+/** The slowest flick stick the flicks command accepts, ms. */
+export const MAX_FLICK_RISE_MS = 1000;
+
+function validFlickRise(ms: unknown): number | null {
+    return typeof ms === "number" && ms > 0 && ms <= MAX_FLICK_RISE_MS ? ms : null;
+}
 
 /** An upload that ended without the new gains stored; `reply` is the FC's answer when it sent one. */
 export class UploadError extends Error {
@@ -169,6 +225,8 @@ export const useWhippyFlightStore = defineStore("whippyflight", () => {
     const flicks = shallowRef<FlickReport | null>(null);
     /** Stick tracking (λ) as entered in the controller settings, saved or not; null without them. */
     const stickTracking = ref<number | null>(null);
+    /** The motor-speed low-pass, Hz (0 for off), as entered in the controller settings, saved or not; null without them. */
+    const motorLpfHz = ref<number | null>(null);
     /** Idle speed, rev/s, as entered in the controller settings, saved or not; null without them. */
     const idleRps = ref<number | null>(null);
     /** The active fit's Pareto front, once computed. */
@@ -186,7 +244,7 @@ export const useWhippyFlightStore = defineStore("whippyflight", () => {
         }
     }
 
-    const stored = getConfig<Partial<WhippyFlightSettings>>(SETTINGS_KEY)[SETTINGS_KEY] ?? {};
+    const stored = inRotations(getConfig<Partial<WhippyFlightSettings>>(SETTINGS_KEY)[SETTINGS_KEY] ?? {});
     const settings = reactive<WhippyFlightSettings>({
         ...DEFAULT_SETTINGS,
         ...stored,
@@ -194,6 +252,14 @@ export const useWhippyFlightStore = defineStore("whippyflight", () => {
         resolution: GRID_RESOLUTIONS.includes(stored.resolution as GridResolution)
             ? (stored.resolution as GridResolution)
             : DEFAULT_SETTINGS.resolution,
+        flickRates: validFlickRates(stored.flickRates),
+        flickRiseMs: validFlickRise(stored.flickRiseMs),
+        flickFeedback: validFlickFeedback(
+            stored.flickFeedback,
+            (stored as { flickFeedforwardOnly?: unknown }).flickFeedforwardOnly,
+        ),
+        flickConditions: validFlickConditions(stored.flickConditions),
+        rateUnit: "rot",
     });
     watch(settings, () => setConfig({ [SETTINGS_KEY]: { ...settings } }), { deep: true });
 
@@ -204,6 +270,7 @@ export const useWhippyFlightStore = defineStore("whippyflight", () => {
                 supported.value = null;
                 status.value = null;
                 stickTracking.value = null;
+                motorLpfHz.value = null;
                 idleRps.value = null;
             }
         },
@@ -324,6 +391,7 @@ export const useWhippyFlightStore = defineStore("whippyflight", () => {
         gains,
         flicks,
         stickTracking,
+        motorLpfHz,
         idleRps,
         front,
         output,

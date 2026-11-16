@@ -36,15 +36,6 @@
                         <UInput v-model="store.settings.python" size="xs" class="font-mono" @change="checkEnv" />
                         <span></span>
 
-                        <span class="text-dimmed">{{ $t("whippyflightToolsDir") }}</span>
-                        <span class="font-mono text-xs truncate">{{ store.settings.toolsDir || "–" }}</span>
-                        <UButton
-                            size="xs"
-                            variant="outline"
-                            :label="$t('whippyflightChoose')"
-                            @click="pipeline.chooseToolsDir"
-                        />
-
                         <span class="text-dimmed">{{ $t("whippyflightWorkdir") }}</span>
                         <span class="font-mono text-xs truncate">{{ store.settings.workdir || "–" }}</span>
                         <div class="flex gap-1">
@@ -64,25 +55,20 @@
                         </div>
                     </div>
                     <div v-if="store.env" class="text-xs flex flex-col gap-0.5">
-                        <span v-if="store.env.pythonVersion" class="text-success">
-                            {{ $t("whippyflightPythonFound", { version: store.env.pythonVersion }) }}
+                        <span v-if="!store.env.pythonVersion" class="text-error">
+                            {{ $t("whippyflightPythonMissing") }}
                         </span>
-                        <span v-else class="text-error">{{ $t("whippyflightPythonMissing") }}</span>
-                        <span v-if="store.env.missingModules.length" class="text-error">
+                        <span v-else-if="store.env.missingModules.length" class="text-error">
                             {{
                                 $t("whippyflightModulesMissing", {
+                                    version: store.env.pythonVersion,
                                     modules: store.env.missingModules.join(", "),
                                     interpolation: { escapeValue: false },
                                 })
                             }}
                         </span>
-                        <span v-if="store.env.missingScripts.length" class="text-error">
-                            {{
-                                $t("whippyflightScriptsMissing", {
-                                    scripts: store.env.missingScripts.join(", "),
-                                    interpolation: { escapeValue: false },
-                                })
-                            }}
+                        <span v-else class="text-success">
+                            {{ $t("whippyflightPythonFound", { version: store.env.pythonVersion }) }}
                         </span>
                         <span v-if="store.env.pythonVersion && !store.env.hasMatplotlib" class="text-dimmed">
                             {{ $t("whippyflightNoMatplotlib") }}
@@ -243,20 +229,6 @@
                             :loading="store.busy === 'plots'"
                             @click="pipeline.savePlots('flicks')"
                         />
-                        <UButton
-                            v-if="store.gains && (!store.flicks || flicksRetracked) && store.workspace?.gainsFit"
-                            size="xs"
-                            variant="outline"
-                            icon="i-lucide-activity"
-                            :label="
-                                flicksRetracked
-                                    ? $t('whippyflightRerunFlicks', { lambda: store.stickTracking })
-                                    : $t('whippyflightRunFlicks')
-                            "
-                            :disabled="!canWork"
-                            :loading="store.busy === 'flicks'"
-                            @click="pipeline.runFlicks"
-                        />
                         <label class="flex items-center gap-2" :title="gridHint">
                             <span class="text-dimmed">{{ $t("whippyflightGrid") }}</span>
                             <USelect
@@ -323,6 +295,72 @@
                     <p v-if="store.gains && !gainsDtOk" class="text-sm text-error">
                         {{ $t("whippyflightDtMismatch") }}
                     </p>
+                    <div v-if="store.gains" class="flex flex-wrap items-center gap-x-6 gap-y-2">
+                        <FlickRateControls
+                            v-model="store.settings.flickRates"
+                            :report="store.flicks"
+                            :disabled="store.busy !== null"
+                        />
+                        <FlickRiseControls
+                            v-model="store.settings.flickRiseMs"
+                            :report="store.flicks"
+                            :disabled="store.busy !== null"
+                        />
+                        <div class="flex items-center gap-3 text-xs" :title="$t('whippyflightFlickFeedbackHint')">
+                            <span class="text-dimmed">{{ $t("whippyflightFlickFeedback") }}</span>
+                            <UCheckbox
+                                v-for="term in FEEDBACK_TERMS"
+                                :key="term"
+                                v-model="store.settings.flickFeedback[term]"
+                                size="sm"
+                                :label="term.toUpperCase()"
+                                :disabled="store.busy !== null"
+                            />
+                        </div>
+                        <div class="grow"></div>
+                        <UButton
+                            v-if="
+                                (!store.flicks ||
+                                    flicksRetracked ||
+                                    flicksRefiltered ||
+                                    flicksRerated ||
+                                    flicksResloped ||
+                                    flicksRemoded ||
+                                    flicksReconditioned) &&
+                                store.workspace?.gainsFit
+                            "
+                            size="xs"
+                            variant="outline"
+                            icon="i-lucide-activity"
+                            :label="
+                                flicksRetracked
+                                    ? $t('whippyflightRerunFlicks', { lambda: store.stickTracking })
+                                    : flicksRefiltered
+                                      ? store.motorLpfHz
+                                          ? $t('whippyflightRerunFlicksMotorLpf', { hz: store.motorLpfHz })
+                                          : $t('whippyflightRerunFlicksMotorLpfOff')
+                                      : flicksRerated
+                                        ? $t('whippyflightRerunFlicksRates')
+                                        : flicksResloped
+                                          ? $t('whippyflightRerunFlicksRise')
+                                          : flicksRemoded
+                                            ? $t('whippyflightRerunFlicksFeedforward')
+                                            : flicksReconditioned
+                                              ? $t('whippyflightRerunFlicksConditions')
+                                              : $t('whippyflightRunFlicks')
+                            "
+                            :disabled="!canWork"
+                            :loading="store.busy === 'flicks'"
+                            @click="pipeline.runFlicks"
+                        />
+                        <FlickConditionsControls
+                            v-model="store.settings.flickConditions"
+                            :logged-noise="gainsFitRun?.noiseRms ?? null"
+                            :logged-turbulence="gainsFitRun?.turbulence ?? null"
+                            :logged-latency="gainsFitRun?.latency ?? null"
+                            :disabled="store.busy !== null"
+                        />
+                    </div>
                     <FlickPanel v-if="store.gains && store.flicks" :report="store.flicks" />
                 </UiBox>
 
@@ -380,9 +418,13 @@ import ControllerSettings from "./whippyflight/ControllerSettings.vue";
 import DiagnosticsPanel from "./whippyflight/DiagnosticsPanel.vue";
 import FitList from "./whippyflight/FitList.vue";
 import FlickPanel from "./whippyflight/FlickPanel.vue";
+import FlickRateControls from "./whippyflight/FlickRateControls.vue";
+import FlickRiseControls from "./whippyflight/FlickRiseControls.vue";
+import FlickConditionsControls from "./whippyflight/FlickConditionsControls.vue";
 import WeightControls from "./whippyflight/WeightControls.vue";
 import FrontPanel from "./whippyflight/FrontPanel.vue";
 import { frontIndexOf } from "@/js/whippyflight/front";
+import { FEEDBACK_TERMS, flownAtRates, sameConditions, sameFeedback } from "@/js/whippyflight/flicks";
 import FlightPicker from "./whippyflight/FlightPicker.vue";
 import { GainSource, useWhippyFlightStore } from "@/stores/whippyflight";
 import { useConnectionStore } from "@/stores/connection";
@@ -475,6 +517,30 @@ const gridStale = computed(() => {
 /** Whether the controller settings' stick tracking differs from the one the flicks were flown at. */
 const flicksRetracked = computed(
     () => !!store.flicks && store.stickTracking !== null && store.stickTracking !== store.flicks.stick_tracking,
+);
+
+/** Whether the controller settings' motor-speed low-pass differs from the one the flicks were flown with. */
+const flicksRefiltered = computed(
+    () => !!store.flicks && store.motorLpfHz !== null && store.motorLpfHz !== store.flicks.motor_lpf_hz,
+);
+
+/** Whether the flick rates set (or unset) by hand differ from those the flicks were flown at. */
+const flicksRerated = computed(() => !!store.flicks && !flownAtRates(store.flicks, store.settings.flickRates));
+
+/** Whether the slowest stick set (or unset) differs from the one the flicks were flown with. */
+const flicksResloped = computed(
+    () => !!store.flicks && (store.flicks.min_rise_ms ?? null) !== store.settings.flickRiseMs,
+);
+
+/** Whether the feedback gains picked differ from those the flicks were flown with. */
+const flicksRemoded = computed(
+    () => !!store.flicks && !sameFeedback(store.flicks.feedback, store.settings.flickFeedback),
+);
+
+/** Whether the flick conditions differ from those the flicks were flown in. */
+const gainsFitRun = computed(() => store.workspace?.fits.find((f) => f.id === store.workspace?.gainsFit));
+const flicksReconditioned = computed(
+    () => !!store.flicks && !sameConditions(store.flicks.conditions, store.settings.flickConditions),
 );
 
 const gainsDtOk = computed(

@@ -60,6 +60,9 @@ vi.mock("../../src/js/whippyflight/pipeline", async (importOriginal) => {
                 hasCoefficients: true,
                 hasDiagnostics: true,
                 hasNoise: disk.noise.has(id),
+                noiseRms: disk.noise.has(id) ? { gyro: 0.5, motor: 40, motor_speed_exponent: null } : null,
+                turbulence: null,
+                latency: null,
                 hasFront: disk.fronts.has(id),
                 plots: [],
                 modified: fit.modified,
@@ -163,7 +166,7 @@ import * as pipelineIo from "../../src/js/whippyflight/pipeline";
 function setup() {
     const store = useWhippyFlightStore();
     store.settings.workdir = "/w";
-    store.env = { pythonVersion: "3.12", missingModules: [], hasMatplotlib: false, missingScripts: [] };
+    store.env = { pythonVersion: "3.12", missingModules: [], hasMatplotlib: false };
     return { store, pipeline: useWhippyFlightPipeline() };
 }
 

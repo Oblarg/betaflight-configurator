@@ -1,7 +1,20 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { fitId, flightSpec, listFlights, specOfLabel, unscannedLogs } from "../../src/js/whippyflight/flights";
-import { controllerLagMs, logMaxRatesRps, maxRatesRps, type FlickMetrics } from "../../src/js/whippyflight/flicks";
+import {
+    DEFAULT_FLICK_CONDITIONS,
+    DEFAULT_FLICK_FEEDBACK,
+    controllerLagMs,
+    flownAtRates,
+    sameConditions,
+    sameFeedback,
+    validFlickConditions,
+    validFlickFeedback,
+    logMaxRatesRps,
+    maxRatesRps,
+    type FlickMetrics,
+    type FlickReport,
+} from "../../src/js/whippyflight/flicks";
 import RateCurve from "../../src/js/RateCurve";
 import { RATES_TYPE, useFlightControllerStore } from "../../src/stores/fc";
 import type { FlightIndex, LogFile } from "../../src/js/whippyflight/pipeline";
@@ -98,5 +111,70 @@ describe("WhippyFlight flicks", () => {
 
     it("counts the controller's lag behind the target, not the smoother's", () => {
         expect(controllerLagMs({ gyro_lag_ms: 28.5, target_lag_ms: 26.25 } as FlickMetrics)).toBeCloseTo(2.25);
+    });
+});
+
+describe("flownAtRates", () => {
+    const report = (from: FlickReport["rates_from"], rps: number[]) =>
+        ({
+            rates_from: from,
+            flicks: ["roll", "pitch", "yaw"].flatMap((axis, i) => [
+                { axis, amp: rps[i] },
+                { axis, amp: -rps[i] },
+            ]),
+        }) as unknown as FlickReport;
+
+    it("matches hand-set rates only when flown at them", () => {
+        expect(flownAtRates(report("manual", [2.2, 2.2, 1.4]), [2.2, 2.2, 1.4])).toBe(true);
+        expect(flownAtRates(report("manual", [2.2, 2.2, 1.4]), [2.2, 2.2, 1.1])).toBe(false);
+        expect(flownAtRates(report("fc", [2.2, 2.2, 1.4]), [2.2, 2.2, 1.4])).toBe(false);
+    });
+
+    it("matches profile rates when none are set by hand", () => {
+        expect(flownAtRates(report("log", [2.8, 2.8, 1.8]), null)).toBe(true);
+        expect(flownAtRates(report("manual", [2.8, 2.8, 1.8]), null)).toBe(false);
+    });
+});
+
+describe("validFlickConditions", () => {
+    it("fills what isn't stored, or isn't valid, with the defaults", () => {
+        expect(validFlickConditions(undefined)).toEqual(DEFAULT_FLICK_CONDITIONS);
+        const stored = validFlickConditions({
+            gyro_filter: false,
+            motor_noise: false,
+            gyro_noise_rms: 2,
+            motor_speed_noise_rms: -1,
+            cg_shift_pct: [5, "x"],
+            turbulence: true,
+            turbulence_rms: [300, 200, 100],
+            turbulence_hz: 0,
+            actuator_delay_ms: 25,
+            telemetry_delay_ms: 3.2,
+        });
+        expect(stored).toEqual({
+            ...DEFAULT_FLICK_CONDITIONS,
+            gyro_filter: false,
+            motor_noise: false,
+            gyro_noise_rms: 2,
+            cg_shift_pct: [5, 0],
+            turbulence: true,
+            turbulence_rms: [300, 200, 100],
+            telemetry_delay_ms: 3.2,
+        });
+        expect(validFlickConditions({ turbulence_rms: [300, -1, 100] }).turbulence_rms).toBeNull();
+        expect(validFlickConditions({ turbulence_rms: 300 }).turbulence_rms).toBeNull();
+        expect(sameConditions(stored, DEFAULT_FLICK_CONDITIONS)).toBe(false);
+        expect(sameConditions(validFlickConditions({}), DEFAULT_FLICK_CONDITIONS)).toBe(true);
+    });
+});
+
+describe("validFlickFeedback", () => {
+    it("keeps every gain unless one is stored off, and carries over feedforward-only", () => {
+        expect(validFlickFeedback(undefined)).toEqual(DEFAULT_FLICK_FEEDBACK);
+        expect(validFlickFeedback({ i: false, d: "x" })).toEqual({ p: true, i: false, d: true });
+        expect(validFlickFeedback(undefined, true)).toEqual({ p: false, i: false, d: false });
+        expect(validFlickFeedback({ p: true, i: true, d: false }, true)).toEqual({ p: true, i: true, d: false });
+        expect(sameFeedback(validFlickFeedback({ d: false }), DEFAULT_FLICK_FEEDBACK)).toBe(false);
+        expect(sameFeedback(validFlickFeedback({}), DEFAULT_FLICK_FEEDBACK)).toBe(true);
     });
 });

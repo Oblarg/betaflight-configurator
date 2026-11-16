@@ -625,13 +625,13 @@
     "whippyflightStepGains": { "message": "4. Gains" },
     "whippyflightStepUpload": { "message": "5. Upload" },
     "whippyflightPython": { "message": "Python" },
-    "whippyflightToolsDir": { "message": "WhippyFlight tools" },
     "whippyflightWorkdir": { "message": "Working directory" },
     "whippyflightChoose": { "message": "Choose…" },
     "whippyflightPythonFound": { "message": "Python {{version}} with the required packages." },
     "whippyflightPythonMissing": { "message": "Python could not be started." },
-    "whippyflightModulesMissing": { "message": "Missing Python packages: {{modules}}" },
-    "whippyflightScriptsMissing": { "message": "Not in the tools directory: {{scripts}}" },
+    "whippyflightModulesMissing": {
+        "message": "Python {{version}} is missing packages: {{modules}}. Choose an interpreter they are installed in, such as a virtual environment's bin/python."
+    },
     "whippyflightNoMatplotlib": {
         "message": "matplotlib is not installed, so plots can't be saved as images; the charts below still work."
     },
@@ -755,16 +755,111 @@
     "whippyflightBusy_flicks": { "message": "Flying the gains through stick flicks…" },
     "whippyflightRunFlicks": { "message": "Fly stick flicks" },
     "whippyflightRerunFlicks": { "message": "Fly flicks again at λ {{lambda}}" },
+    "whippyflightRerunFlicksRates": { "message": "Fly flicks again at the new rates" },
+    "whippyflightFlickRates": { "message": "Flick rates" },
+    "whippyflightFlickRatesHint": {
+        "message": "Full-stick rates the flicks are flown at. By default, those of the connected flight controller, else of the logs."
+    },
+    "whippyflightFlickReset": { "message": "Reset to default" },
+    "whippyflightRerunFlicksRise": { "message": "Fly flicks again with the new stick speed" },
+    "whippyflightFlickRise": { "message": "Rise time" },
+    "whippyflightFlickFeedback": { "message": "Feedback" },
+    "whippyflightFlickFeedbackHint": {
+        "message": "The feedback gains the flicks fly with. Clear one to fly with it zeroed, or all three to see how much of the response the feedforward makes alone."
+    },
+    "whippyflightFlickFeedforwardOnlyFlown": {
+        "message": "Flown with feedforward only: the feedback gains were zeroed. The delay margin, trim and hover roughness are still the full gains'."
+    },
+    "whippyflightFlickFeedbackFlown": {
+        "message": "Flown with {{terms}} feedback zeroed. The delay margin, trim and hover roughness are still the full gains'."
+    },
+    "whippyflightRerunFlicksFeedforward": { "message": "Fly flicks again with the new feedback setting" },
+    "whippyflightRerunFlicksMotorLpf": { "message": "Fly flicks again at the {{hz}} Hz motor-speed low-pass" },
+    "whippyflightRerunFlicksMotorLpfOff": { "message": "Fly flicks again with the motor-speed low-pass off" },
+    "whippyflightRerunFlicksConditions": { "message": "Fly flicks again in the new conditions" },
+    "whippyflightFlick_sensor": { "message": "Sensor noise" },
+    "whippyflightFlick_sensorHint": {
+        "message": "Gyro filtering, motor delays and measured gyro and motor noise in the simulated flicks"
+    },
+    "whippyflightFlick_system": { "message": "System noise" },
+    "whippyflightFlick_systemHint": {
+        "message": "Disturbances acting on the craft in the simulated flicks: CG offset and turbulence"
+    },
+    "whippyflightFlickGyroFilter": { "message": "Gyro filters" },
+    "whippyflightFlickGyroFilterHint": {
+        "message": "Pass the gyro through the fit's gyro low-pass filters before the controller sees it, as on the flight controller."
+    },
+    "whippyflightFlickGyroFilterUnmodeled": {
+        "message": "The fit's gyro filters aren't modeled, so the flicks were flown with an unfiltered gyro."
+    },
+    "whippyflightFlickDelay": { "message": "Delays" },
+    "whippyflightFlickDelayHint": {
+        "message": "Dead time between a motor command and the motors acting on it, and between the motors' speed and its report to the controller. They start at what the fit measured: the whole delay from command to speed report, one controller tick of it the motors'. Flown in whole controller ticks; the delay margin and trim fly them too."
+    },
+    "whippyflightFlickDelayActuator": { "message": "motor command" },
+    "whippyflightFlickDelayTelemetry": { "message": "speed telemetry" },
+    "whippyflightFlickDelayFitted": { "message": "as fitted" },
+    "whippyflightFlickDelayNone": { "message": "not measured: fit again to measure them" },
+    "whippyflightFlickDelayFromFit": { "message": "From the fit" },
+    "whippyflightFlickDelayFlown": { "message": "motor command {{actuator}} ms, speed telemetry {{telemetry}} ms" },
+    "whippyflightFlickDelayFitShort": { "message": "(as fitted)" },
+    "whippyflightFlickDelaySetShort": { "message": "(set in the conditions)" },
+    "whippyflightFlickNoise": { "message": "Noise" },
+    "whippyflightFlickNoiseHint": {
+        "message": "RMS of the gyro noise over its axes and of the motor-speed noise over the motors. They start at what the fit's log recorded; the recording is rescaled to what you set. Untick one to fly without it, keeping its value."
+    },
+    "whippyflightFlickNoiseRms": { "message": "RMS" },
+    "whippyflightFlickNoiseSpeed": { "message": "at hover, ∝ speed^{{k}}" },
+    "whippyflightFlickNoiseSpeedHint": {
+        "message": "The motor-speed noise grows with each motor's speed, as the log measured: the RMS set is at hover, and each motor's noise follows its own speed through the flicks."
+    },
+    "whippyflightFlickNoiseLogged": { "message": "as logged" },
+    "whippyflightFlickNoiseFromLogs": { "message": "From the log" },
+    "whippyflightFlickNoiseNone": { "message": "The fit has no noise extracted." },
+    "whippyflightFlickNoiseGyro": { "message": "gyro" },
+    "whippyflightFlickNoiseMotor": { "message": "motor" },
+    "whippyflightFlickNoisyFlights": { "message": "in flights" },
+    "whippyflightFlickNoisyFlightsHint": {
+        "message": "Fly the plotted flights with the noise. Otherwise the noise only sets the roughness figures."
+    },
+    "whippyflightFlickCg": { "message": "CG offset" },
+    "whippyflightFlickCgHint": {
+        "message": "Shift the centre of gravity by a percentage of the arm. The hover is flown long enough first for the integral to trim it out, as it has in flight."
+    },
+    "whippyflightFlickCg_right": { "message": "right" },
+    "whippyflightFlickCg_forward": { "message": "forward" },
+    "whippyflightFlickTurbulence": { "message": "Turbulence" },
+    "whippyflightFlickTurbulenceHint": {
+        "message": "Random angular acceleration on each axis, low-passed at one bandwidth; the same each run. It starts at what the fit left unexplained between 2 and 40 Hz: slower is a bias over a flick (the CG offset's to stand for), faster is gyro noise. Untick to fly without it, keeping its values."
+    },
+    "whippyflightFlickTurbulenceNone": { "message": "Not measured: fit again to measure it." },
+    "whippyflightFlickRiseHint": {
+        "message": "Shortest time each flick's stick takes to reach full deflection. By default, the fastest the setpoint filtering allows; set it longer to see the gains on slower sticks."
+    },
+    "whippyflightFlickStickRise": { "message": "Stick rise" },
+    "whippyflightFlickStickRiseHint": {
+        "message": "How long the stick took to reach full deflection; dimmed when it is the fastest the setpoint filtering allows."
+    },
+    "whippyflightFlickDir_roll_pos": { "message": "Roll right" },
+    "whippyflightFlickDir_roll_neg": { "message": "Roll left" },
+    "whippyflightFlickDir_pitch_pos": { "message": "Pitch up" },
+    "whippyflightFlickDir_pitch_neg": { "message": "Pitch down" },
+    "whippyflightFlickDir_yaw_pos": { "message": "Yaw right" },
+    "whippyflightFlickDir_yaw_neg": { "message": "Yaw left" },
     "whippyflightFlickStickTracking": { "message": "Stick tracking λ" },
     "whippyflightFlickStickTrackingFc": { "message": "(controller settings)" },
     "whippyflightFlickStickTrackingLog": { "message": "(from the logs)" },
+    "whippyflightFlickMotorLpf": { "message": "Motor-speed low-pass" },
+    "whippyflightFlickMotorLpfHint": {
+        "message": "The low-pass on the motor speeds the controller reads (whippyflight_rpm_lpf_hz): from the controller settings when connected, otherwise from the fit's logs."
+    },
     "whippyflightFlickStickTrackingHint": {
         "message": "The stick tracking these flicks were flown with: the controller settings' value as entered (saved or not) when connected, else the one the logs were flown with."
     },
     "whippyflightFlickDefaultRates": {
         "message": "Flown at Betaflight's default 670°/s: neither a connected flight controller nor the logs gave max rates."
     },
-    "whippyflightFlickTitle": { "message": "{{axis}}, full stick ({{dps}}°/s)" },
+    "whippyflightFlickTitle": { "message": "{{axis}}, full stick ({{rps}} rot/s)" },
     "whippyflightFlickAxis": { "message": "Flick" },
     "whippyflightFlickTargetLag": { "message": "Target behind stick" },
     "whippyflightFlickControllerLag": { "message": "Gyro behind target" },
@@ -778,6 +873,7 @@
     "whippyflightFlickSaturation": { "message": "Saturated" },
     "whippyflightFlickRoughness": { "message": "Motor roughness" },
     "whippyflightFlickMotors": { "message": "Motor voltage (V)" },
+    "whippyflightFlickMotorSpeeds": { "message": "Motor speed (rev/s)" },
     "whippyflightFlickMotor": { "message": "Motor {{n}}" },
     "whippyflightFlickRoughnessNote": {
         "message": "Motor roughness in the table is what the fit's logged gyro and motor-speed noise adds to the motor voltages during each flick (RMS above 50 Hz, mean over motors). It grows with how far the flick drives the motors from hover, most of it from motor-speed noise. Hover roughness is the same measure at hover with no stick."
@@ -881,6 +977,10 @@
     "whippyflightGain_MISALIGNED": { "message": "Blob layout invalid" },
     "whippyflightGain_TOO_LARGE": { "message": "Blob larger than the gain store" },
     "whippyflightGain_NO_STORE": { "message": "No gain store" },
+    "whippyflightGain_BAD_LAYOUT": { "message": "Motor layout invalid" },
+    "whippyflightGain_LAYOUT_MISMATCH": {
+        "message": "Gains are for a different motor layout (check the mixer and motor direction)"
+    },
     "whippyflightSource_NONE": { "message": "Nothing" },
     "whippyflightSource_SDCARD": { "message": "SD card" },
     "whippyflightSource_DATAFLASH": { "message": "Dataflash" },
