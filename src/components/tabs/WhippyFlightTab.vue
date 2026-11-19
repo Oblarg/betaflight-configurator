@@ -219,15 +219,15 @@
                         <span v-else class="text-dimmed">{{ $t("whippyflightNoGainsYet") }}</span>
                         <div class="grow"></div>
                         <UButton
-                            v-if="store.flicks"
+                            v-if="store.gains"
                             size="xs"
                             variant="outline"
                             icon="i-lucide-images"
                             :label="$t('whippyflightSavePlots')"
-                            :title="plotsHint"
+                            :title="gainPlotsHint"
                             :disabled="!canWork || !store.env?.hasMatplotlib"
                             :loading="store.busy === 'plots'"
-                            @click="pipeline.savePlots('flicks')"
+                            @click="pipeline.savePlots('gains')"
                         />
                         <label class="flex items-center gap-2" :title="gridHint">
                             <span class="text-dimmed">{{ $t("whippyflightGrid") }}</span>
@@ -450,6 +450,9 @@ const connected = computed(() => connectionStore.connectionValid);
 const canWork = computed(() => !store.busy && pipeline.currentStep.value !== "setup");
 const plotsHint = computed(() =>
     t(store.env?.hasMatplotlib ? "whippyflightSavePlotsHint" : "whippyflightNoMatplotlib"),
+);
+const gainPlotsHint = computed(() =>
+    t(store.env?.hasMatplotlib ? "whippyflightSaveGainPlotsHint" : "whippyflightNoMatplotlib"),
 );
 const canImport = computed(() => !store.busy && !!store.settings.workdir);
 

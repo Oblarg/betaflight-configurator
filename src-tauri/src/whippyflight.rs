@@ -16,7 +16,9 @@
 //!     their scores (scores.json, `whippyflight_front`)
 //! <workdir>/gains/gains.wfg     gains, and gains/fit.txt the fit they came from
 //! <workdir>/gains/flicks.json   the gains flown through stick flicks on that
-//!     fit's plant (`whippyflight_flicks`), and gains/plots/*.png of them
+//!     fit's plant (`whippyflight_flicks`), and gains/plots/*.png of them;
+//!     gains/plots/surfaces/ the gains over motor-speed space, and
+//!     gains/plots/occupancy/ that fit's flights' time there
 //! ```
 //!
 //! Script output is streamed line by line on the `whippyflight-output` event.
@@ -126,6 +128,11 @@ const GAINS_WEIGHTS: &str = "gains/weights.json";
 const FLICKS: &str = "gains/flicks.json";
 const FLICK_PLOTS_DIR: &str = "gains/plots";
 const FLICK_PLOT_MODULE: &str = "whippyflight.plot_flicks";
+/// The gains over motor-speed space, and the gains fit's flights' time there.
+const GAIN_PLOTS_DIR: &str = "gains/plots/surfaces";
+const GAIN_PLOT_MODULE: &str = "whippyflight.plot_gains";
+const OCCUPANCY_PLOTS_DIR: &str = "gains/plots/occupancy";
+const OCCUPANCY_PLOT_MODULE: &str = "whippyflight_betaflight.plot_occupancy";
 const FIT_PLOT_MODULE: &str = "whippyflight_betaflight.fit_diagnostics";
 const NOISE_MODULE: &str = "whippyflight_betaflight.extract_noise";
 /// A fit's sensor noise (extract_noise), and its window and BF's roughness there.
@@ -252,6 +259,39 @@ pub enum Job {
     /// Plot `gains/flicks.json` into `gains/plots`.
     #[serde(rename_all = "camelCase")]
     FlickPlots,
+    /// Plot `gains/gains.wfg` over motor-speed space into `gains/plots/surfaces`.
+    #[serde(rename_all = "camelCase")]
+    GainPlots,
+    /// Plot the time the gains fit's flights spend over the gains' motor-speed space, and
+    /// how far the gains there stray from hover's, into `gains/plots/occupancy`.
+    #[serde(rename_all = "camelCase")]
+    OccupancyPlots,
+}
+
+/// The flights a fit was made from (fit_model's `fit.sources`), as `<log>[#n]` in `logs/`.
+fn fit_flights(coefficients: &Path) -> Result<Vec<String>, String> {
+    #[derive(Deserialize)]
+    struct Coefficients {
+        fit: Sources,
+    }
+    #[derive(Deserialize)]
+    struct Sources {
+        sources: Vec<String>,
+    }
+    let json = std::fs::read(coefficients).map_err(|e| format!("{}: {e}", coefficients.display()))?;
+    let parsed: Coefficients = serde_json::from_slice(&json).map_err(|e| e.to_string())?;
+    parsed
+        .fit
+        .sources
+        .into_iter()
+        .map(|source| {
+            source
+                .strip_prefix(LOGS_DIR)
+                .and_then(|rest| rest.strip_prefix(['/', '\\']))
+                .map(str::to_owned)
+                .ok_or_else(|| format!("the fit's flight {source} isn't in {LOGS_DIR}"))
+        })
+        .collect()
 }
 
 #[derive(Serialize, Clone)]
@@ -618,6 +658,32 @@ fn job_args(dir: &Path, job: &Job) -> Result<Vec<String>, String> {
             let _ = std::fs::remove_dir_all(dir.join(FLICK_PLOTS_DIR));
             let mut args = module(FLICK_PLOT_MODULE);
             args.extend([text(dir.join(FLICKS)), text(dir.join(FLICK_PLOTS_DIR))]);
+            Ok(args)
+        }
+        Job::GainPlots => {
+            if !dir.join(GAINS).is_file() {
+                return Err("no gains to plot".into());
+            }
+            let _ = std::fs::remove_dir_all(dir.join(GAIN_PLOTS_DIR));
+            let mut args = module(GAIN_PLOT_MODULE);
+            args.extend([text(dir.join(GAINS)), text(dir.join(GAIN_PLOTS_DIR))]);
+            Ok(args)
+        }
+        Job::OccupancyPlots => {
+            if !dir.join(GAINS).is_file() {
+                return Err("no gains to plot".into());
+            }
+            let fit = std::fs::read_to_string(dir.join(GAINS_FIT))
+                .map_err(|_| "the gains don't record the fit they came from".to_string())?;
+            let coefficients = dir.join(FITS_DIR).join(plain_name(fit.trim())?).join(COEFFICIENTS);
+            let _ = std::fs::remove_dir_all(dir.join(OCCUPANCY_PLOTS_DIR));
+            let mut args = module(OCCUPANCY_PLOT_MODULE);
+            args.extend([text(dir.join(GAINS)), text(dir.join(OCCUPANCY_PLOTS_DIR))]);
+            for spec in fit_flights(&coefficients)? {
+                let (name, index) = flight_spec(&spec)?;
+                let path = log(name)?;
+                args.push(index.map_or(path.clone(), |n| format!("{path}#{n}")));
+            }
             Ok(args)
         }
     }
@@ -1911,6 +1977,34 @@ mod tests {
     }
 
     #[test]
+    fn plots_the_gains_fits_flights() {
+        let dir = std::env::temp_dir().join(format!("whippyflight-occupancy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("gains")).unwrap();
+        std::fs::create_dir_all(dir.join(FITS_DIR).join("a_1")).unwrap();
+        assert!(job_args(&dir, &Job::OccupancyPlots).is_err());
+        std::fs::write(dir.join(GAINS), b"").unwrap();
+        assert!(job_args(&dir, &Job::OccupancyPlots).is_err());
+        std::fs::write(dir.join(GAINS_FIT), "a_1").unwrap();
+        let coefficients = dir.join(FITS_DIR).join("a_1").join(COEFFICIENTS);
+        std::fs::write(&coefficients, r#"{"fit": {"sources": ["logs/a.bbl#2", "logs\\b.bbl"]}}"#).unwrap();
+        let args = job_args(&dir, &Job::OccupancyPlots).unwrap();
+        let logs = dir.join(LOGS_DIR);
+        assert_eq!(
+            args[4..],
+            [
+                format!("{}#2", logs.join("a.bbl").display()),
+                logs.join("b.bbl").display().to_string()
+            ]
+        );
+        for bad in [r#"["elsewhere/a.bbl#1"]"#, r#"["logs/../a.bbl"]"#] {
+            std::fs::write(&coefficients, format!(r#"{{"fit": {{"sources": {bad}}}}}"#)).unwrap();
+            assert!(job_args(&dir, &Job::OccupancyPlots).is_err(), "{bad}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn parses_flight_specs() {
         assert_eq!(flight_spec("a.bbl").unwrap(), ("a.bbl", None));
         assert_eq!(flight_spec("a.bbl#3").unwrap(), ("a.bbl", Some(3)));
@@ -2089,17 +2183,27 @@ mod tests {
         }
         let report = fly_flicks(&dir, None, None, None, None, ALL, FlickConditions::default()).unwrap();
         std::fs::write(dir.join(FLICKS), serde_json::to_vec(&report).unwrap()).unwrap();
-        let status = python_command(&toolchain)
-            .args(job_args(&dir, &Job::FlickPlots).unwrap())
-            .status()
-            .unwrap();
-        assert!(status.success());
+        for job in [Job::FlickPlots, Job::GainPlots, Job::OccupancyPlots] {
+            let status = python_command(&toolchain)
+                .args(job_args(&dir, &job).unwrap())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        for (plots, png) in [(GAIN_PLOTS_DIR, "gains_diagonal.png"), (OCCUPANCY_PLOTS_DIR, "deviation.png")] {
+            assert!(dir.join(plots).join(png).is_file(), "{plots}/{png}");
+        }
         if let Ok(keep) = std::env::var("WHIPPYFLIGHT_KEEP") {
             let _ = std::fs::remove_dir_all(&keep);
             std::fs::create_dir_all(&keep).unwrap();
             let fit_plots = dir.join(FITS_DIR).join("flight_1").join(PLOTS_DIR);
-            for from in [dir.join(FLICK_PLOTS_DIR), fit_plots] {
-                for entry in std::fs::read_dir(from).unwrap().flatten() {
+            for from in [
+                dir.join(FLICK_PLOTS_DIR),
+                dir.join(GAIN_PLOTS_DIR),
+                dir.join(OCCUPANCY_PLOTS_DIR),
+                fit_plots,
+            ] {
+                for entry in std::fs::read_dir(from).unwrap().flatten().filter(|e| e.path().is_file()) {
                     std::fs::copy(entry.path(), Path::new(&keep).join(entry.file_name())).unwrap();
                 }
             }

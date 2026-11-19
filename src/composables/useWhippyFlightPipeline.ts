@@ -140,7 +140,7 @@ export interface WhippyFlightPipeline {
     cancel: () => Promise<void>;
     revealWorkdir: (sub?: string) => Promise<void>;
     /** Write PNGs of the shown fit's diagnostics, or of the flicks, and open their directory. */
-    savePlots: (what: "fit" | "flicks") => Promise<void>;
+    savePlots: (what: "fit" | "gains") => Promise<void>;
 }
 
 /**
@@ -635,14 +635,25 @@ export function useWhippyFlightPipeline(): WhippyFlightPipeline {
         await reveal(store.settings.workdir, sub).catch((error) => (store.error = describeError(error)));
     }
 
-    function savePlots(what: "fit" | "flicks"): Promise<void> {
+    function savePlots(what: "fit" | "gains"): Promise<void> {
         return step("plots", async () => {
             const fit = store.activeFit;
             if (what === "fit" && !fit) {
                 throw new Error(i18n.getMessage("whippyflightNoFitChosen"));
             }
             store.output = [];
-            await run(what === "fit" ? { kind: "fitPlots", fit: fit! } : { kind: "flickPlots" });
+            if (what === "fit") {
+                await run({ kind: "fitPlots", fit: fit! });
+            } else {
+                // The flick plots' directory holds the others: they go first, as they clear it.
+                if (store.workspace?.hasFlicks) {
+                    await run({ kind: "flickPlots" });
+                }
+                await run({ kind: "gainPlots" });
+                if (store.workspace?.gainsFit) {
+                    await run({ kind: "occupancyPlots" });
+                }
+            }
             await refreshWorkspace();
             await reveal(store.settings.workdir, what === "fit" ? `fits/${fit}/plots` : "gains/plots");
         });

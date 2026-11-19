@@ -299,9 +299,23 @@ describe("WhippyFlight pipeline flight selection", () => {
         await pipeline.savePlots("fit");
         expect(disk.jobs.at(-1)).toEqual({ kind: "fitPlots", fit: "b_1" });
         expect(pipelineIo.reveal).toHaveBeenLastCalledWith("/w", "fits/b_1/plots");
-        await pipeline.savePlots("flicks");
-        expect(disk.jobs.at(-1)).toEqual({ kind: "flickPlots" });
+        let before = disk.jobs.length;
+        await pipeline.savePlots("gains");
+        expect(disk.jobs.slice(before)).toEqual([
+            { kind: "flickPlots" },
+            { kind: "gainPlots" },
+            { kind: "occupancyPlots" },
+        ]);
         expect(pipelineIo.reveal).toHaveBeenLastCalledWith("/w", "gains/plots");
+        // Without flicks or a recorded fit, only the gains themselves.
+        disk.flicks = null;
+        disk.gainsFit = null;
+        await pipeline.refreshWorkspace();
+        before = disk.jobs.length;
+        await pipeline.savePlots("gains");
+        expect(disk.jobs.slice(before)).toEqual([{ kind: "gainPlots" }]);
+        disk.gainsFit = "b_1";
+        await pipeline.refreshWorkspace();
         expect(store.error).toBe("");
 
         // A connected FC's loop rate and max rates win over the log's.

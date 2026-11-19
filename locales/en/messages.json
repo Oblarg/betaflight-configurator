@@ -661,6 +661,9 @@
     "whippyflightDrag_on": { "message": "On" },
     "whippyflightDrag_off": { "message": "Off" },
     "whippyflightSavePlots": { "message": "Save plots" },
+    "whippyflightSaveGainPlotsHint": {
+        "message": "Write PNG images of the gains over motor speeds, of where the fit's flights spent their time there and how far the gains there differ from hover's, and of the flicks if flown, into the working directory, and open it."
+    },
     "whippyflightSavePlotsHint": {
         "message": "Write these plots as PNG images into the working directory, and open it."
     },

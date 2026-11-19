@@ -175,7 +175,11 @@ export type Job =
     /** Plot `fits/<fit>/diagnostics.json` into `fits/<fit>/plots`. */
     | { kind: "fitPlots"; fit: string }
     /** Plot `gains/flicks.json` into `gains/plots`. */
-    | { kind: "flickPlots" };
+    | { kind: "flickPlots" }
+    /** Plot `gains/gains.wfg` over motor-speed space into `gains/plots/surfaces`. */
+    | { kind: "gainPlots" }
+    /** Plot the gains fit's flights over the gains' motor-speed space into `gains/plots/occupancy`. */
+    | { kind: "occupancyPlots" };
 
 export interface OutputLine {
     line: string;
