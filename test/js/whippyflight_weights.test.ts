@@ -13,7 +13,7 @@ describe("WhippyFlight weight sliders", () => {
     it("span their ranges on a log scale", () => {
         expect(weightAt(0, STIFFNESS_RANGE)).toBe(5);
         expect(weightAt(SLIDER_MAX, STIFFNESS_RANGE)).toBe(30);
-        expect(weightAt(SLIDER_MAX / 2, INTEGRAL_RANGE)).toBe(0.0141);
+        expect(weightAt(SLIDER_MAX / 2, INTEGRAL_RANGE)).toBe(0.0707);
         expect(sliderOf(Math.sqrt(5 * 30), STIFFNESS_RANGE)).toBeCloseTo(SLIDER_MAX / 2);
     });
 
@@ -36,6 +36,6 @@ describe("WhippyFlight weight sliders", () => {
 
     it("compare by value", () => {
         expect(sameWeights({ ...DEFAULT_WEIGHTS }, DEFAULT_WEIGHTS)).toBe(true);
-        expect(sameWeights({ ...DEFAULT_WEIGHTS, sigmaInt: 0.02 }, DEFAULT_WEIGHTS)).toBe(false);
+        expect(sameWeights({ ...DEFAULT_WEIGHTS, sigmaInt: 0.1 }, DEFAULT_WEIGHTS)).toBe(false);
     });
 });

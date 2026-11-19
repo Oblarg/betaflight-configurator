@@ -32,13 +32,13 @@
                 @click="advanced = !advanced"
             />
             <UButton
-                v-if="!sameWeights(weights, DEFAULT_WEIGHTS)"
+                v-if="!sameWeights(weights, defaults)"
                 size="xs"
                 variant="link"
                 icon="i-lucide-rotate-ccw"
                 :label="$t('whippyflightWeightsReset')"
                 :disabled="disabled"
-                @click="weights = { ...DEFAULT_WEIGHTS }"
+                @click="weights = { ...defaults }"
             />
             <span v-if="changed" class="text-xs text-warning">{{ $t("whippyflightWeightsChanged") }}</span>
         </div>
@@ -59,6 +59,31 @@
                 </label>
             </div>
             <p class="text-xs text-dimmed">{{ $t("whippyflightWeightsAdvancedHint") }}</p>
+            <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                <label v-for="f in tauFields" :key="f.key" class="flex items-center gap-2">
+                    <span class="text-dimmed">{{ f.label }}</span>
+                    <UInputNumber
+                        :model-value="weights[f.key] * f.scale"
+                        :min="f.step"
+                        :step="f.step"
+                        :format-options="{ useGrouping: false, maximumSignificantDigits: 4 }"
+                        :disabled="disabled"
+                        size="xs"
+                        class="w-28"
+                        @update:model-value="(v) => v && v > 0 && set(f.key, v / f.scale)"
+                    />
+                </label>
+                <UButton
+                    v-if="!sameTimeConstants(weights, defaultTaus)"
+                    size="xs"
+                    variant="link"
+                    icon="i-lucide-rotate-ccw"
+                    :label="$t('whippyflightWeightsReset')"
+                    :disabled="disabled"
+                    @click="weights = { ...weights, ...defaultTaus }"
+                />
+            </div>
+            <p class="text-xs text-dimmed">{{ $t("whippyflightTauHint") }}</p>
         </div>
     </div>
 </template>
@@ -69,11 +94,13 @@ import { useTranslation } from "i18next-vue";
 import {
     DEFAULT_WEIGHTS,
     INTEGRAL_RANGE,
+    sameTimeConstants,
     sameWeights,
     SLIDER_MAX,
     sliderOf,
     STIFFNESS_RANGE,
     weightAt,
+    type TimeConstants,
     type WeightRange,
     type Weights,
 } from "@/js/whippyflight/weights";
@@ -81,6 +108,9 @@ import {
 const props = defineProps<{
     /** The weights the current gains were computed with, if known. */
     recorded: Weights | null;
+    /** The σ_rate, rot/s, and τ_deriv, s, the shown fit's front derived, if it has them. */
+    derivedSigmaRate: number | null;
+    derivedTauDeriv: number | null;
     disabled?: boolean;
 }>();
 const weights = defineModel<Weights>({ required: true });
@@ -89,6 +119,20 @@ const { t } = useTranslation();
 const advanced = ref(false);
 
 const changed = computed(() => props.recorded !== null && !sameWeights(weights.value, props.recorded));
+const defaultTaus = computed<TimeConstants>(() => ({
+    tauDeriv: props.derivedTauDeriv ?? DEFAULT_WEIGHTS.tauDeriv,
+    tauInt: DEFAULT_WEIGHTS.tauInt,
+}));
+const defaults = computed<Weights>(() => ({
+    ...DEFAULT_WEIGHTS,
+    sigmaRate: props.derivedSigmaRate ?? DEFAULT_WEIGHTS.sigmaRate,
+    ...defaultTaus.value,
+}));
+
+const tauFields = computed<{ key: keyof TimeConstants; label: string; scale: number; step: number }[]>(() => [
+    { key: "tauDeriv", label: t("whippyflightTauDeriv"), scale: 1e3, step: 0.1 },
+    { key: "tauInt", label: t("whippyflightTauInt"), scale: 1, step: 0.01 },
+]);
 
 const sliders = computed<
     {

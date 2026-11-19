@@ -90,6 +90,8 @@ export interface WhippyFlightSettings {
     flickConditions: FlickConditions;
     /** The unit of the stored rates; settings without it hold them in degrees. */
     rateUnit: "rot";
+    /** The unit of the stored σ_int; settings without it hold the low-passed rate error, rot/s. */
+    integralUnit: "rot";
 }
 
 const DEFAULT_SETTINGS: WhippyFlightSettings = {
@@ -103,7 +105,21 @@ const DEFAULT_SETTINGS: WhippyFlightSettings = {
     flickFeedback: { ...DEFAULT_FLICK_FEEDBACK },
     flickConditions: { ...DEFAULT_FLICK_CONDITIONS, cg_shift_pct: [0, 0] },
     rateUnit: "rot",
+    integralUnit: "rot",
 };
+
+/**
+ * `stored` with a σ_int saved as the low-passed rate error the integral holds (rot/s) as the
+ * integral state it is at that leak (rot), which weighs the same.
+ */
+function integralInRotations(stored: Partial<WhippyFlightSettings>): Partial<WhippyFlightSettings> {
+    const weights = stored.weights as Partial<Weights> | undefined;
+    if (stored.integralUnit === "rot" || typeof weights?.sigmaInt !== "number") {
+        return stored;
+    }
+    const tauInt = typeof weights.tauInt === "number" ? weights.tauInt : DEFAULT_WEIGHTS.tauInt;
+    return { ...stored, weights: { ...weights, sigmaInt: weights.sigmaInt * tauInt } as Weights };
+}
 
 /** `stored` with the rates of settings saved in degrees in rotations. */
 function inRotations(stored: Partial<WhippyFlightSettings>): Partial<WhippyFlightSettings> {
@@ -244,7 +260,9 @@ export const useWhippyFlightStore = defineStore("whippyflight", () => {
         }
     }
 
-    const stored = inRotations(getConfig<Partial<WhippyFlightSettings>>(SETTINGS_KEY)[SETTINGS_KEY] ?? {});
+    const stored = integralInRotations(
+        inRotations(getConfig<Partial<WhippyFlightSettings>>(SETTINGS_KEY)[SETTINGS_KEY] ?? {}),
+    );
     const settings = reactive<WhippyFlightSettings>({
         ...DEFAULT_SETTINGS,
         ...stored,
@@ -260,6 +278,7 @@ export const useWhippyFlightStore = defineStore("whippyflight", () => {
         ),
         flickConditions: validFlickConditions(stored.flickConditions),
         rateUnit: "rot",
+        integralUnit: "rot",
     });
     watch(settings, () => setConfig({ [SETTINGS_KEY]: { ...settings } }), { deep: true });
 

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { nextTick } from "vue";
 import type { Diagnostics } from "../../src/js/whippyflight/diagnostics";
 import type { Airframe, FlightIndex, Job, Workspace } from "../../src/js/whippyflight/pipeline";
 import { DEFAULT_WEIGHTS, type Weights } from "../../src/js/whippyflight/weights";
@@ -115,23 +116,33 @@ vi.mock("../../src/js/whippyflight/pipeline", async (importOriginal) => {
             const job = [...disk.jobs].reverse().find((j: Job) => j.kind === "front" && j.fit === fit) as Job & {
                 kind: "front";
             };
-            const point = (sigma_deriv: number, sigma_int: number): FrontPoint => ({
+            const point = (sigma_deriv: number, sigma_int: number, grid: [number, number]): FrontPoint => ({
                 sigma_deriv,
                 sigma_int,
+                grid,
                 kick_iae_ms: 4 * sigma_deriv,
                 rough_v: 0.05 / sigma_deriv,
                 delay_margin_ms: 3,
-                trim_deg: 500 * sigma_int,
+                trim_deg: 100 * sigma_int,
             });
+            const derivedRate = job.derivedSigmaRate ?? 2;
+            const rate = job.sigmaRate ?? derivedRate;
+            const derived = job.derivedTauDeriv ?? 0.0075 * rate;
             const report = {
-                version: 1,
+                version: 2,
                 fit,
                 dt: job.dt ?? 1 / 4000,
-                sigma_rate: job.sigmaRate,
+                sigma_rate: rate,
+                derived_sigma_rate: derivedRate,
+                tau_deriv: job.tauDeriv ?? derived,
+                tau_int: job.tauInt,
+                derived_tau_deriv: derived,
+                resolution: job.grid.resolution,
+                idle_rps: job.grid.idleRps,
                 gyro_filters: true,
                 max_margin_ms: 16,
                 bf_rough_v: null,
-                points: [point(15, 0.012), point(10, 0.004)],
+                points: [point(15, 0.06, [0, 0]), point(10, 0.02, [1, 1])],
             };
             disk.fronts.set(fit, report);
             return structuredClone(report);
@@ -141,7 +152,13 @@ vi.mock("../../src/js/whippyflight/pipeline", async (importOriginal) => {
             const front = disk.fronts.get(fit)!;
             const p = front.points[index];
             disk.gainsFit = fit;
-            disk.gainsWeights = { sigmaRate: front.sigma_rate, sigmaDeriv: p.sigma_deriv, sigmaInt: p.sigma_int };
+            disk.gainsWeights = {
+                sigmaRate: front.sigma_rate,
+                sigmaDeriv: p.sigma_deriv,
+                sigmaInt: p.sigma_int,
+                tauDeriv: front.tau_deriv,
+                tauInt: front.tau_int,
+            };
             disk.flicks = null;
         }),
         deleteFit: vi.fn(async (_dir: string, id: string) => void disk.fits.delete(id)),
@@ -169,6 +186,23 @@ function setup() {
     store.env = { pythonVersion: "3.12", missingModules: [], hasMatplotlib: false };
     return { store, pipeline: useWhippyFlightPipeline() };
 }
+
+describe("WhippyFlight stored settings", () => {
+    beforeEach(() => setActivePinia(createPinia()));
+
+    it("reads a σ_int saved as a rate error as the integral state it is", async () => {
+        const weights = { ...DEFAULT_WEIGHTS, sigmaInt: 0.012, tauInt: 3 };
+        localStorage.setItem("whippyflight", JSON.stringify({ whippyflight: { rateUnit: "rot", weights } }));
+        const store = useWhippyFlightStore();
+        expect(store.settings.weights.sigmaInt).toBeCloseTo(0.036, 12);
+        // Once saved in rotations it stays.
+        store.settings.workdir = "/w";
+        await nextTick();
+        setActivePinia(createPinia());
+        expect(useWhippyFlightStore().settings.weights.sigmaInt).toBeCloseTo(0.036, 12);
+        localStorage.removeItem("whippyflight");
+    });
+});
 
 describe("WhippyFlight pipeline flight selection", () => {
     beforeEach(() => {
@@ -311,22 +345,75 @@ describe("WhippyFlight pipeline flight selection", () => {
         expect(store.activeFit).toBe("b_1");
         expect(store.front).toBeNull();
 
-        store.settings.weights = { ...DEFAULT_WEIGHTS, sigmaRate: 2 };
+        store.settings.weights = { ...DEFAULT_WEIGHTS, tauInt: 3 };
         await pipeline.exploreFront();
         expect(store.error).toBe("");
-        // The fit's noise first, for roughness; then the front at the advanced σ_rate.
+        // The fit's noise first, for roughness; then the front at the advanced τ_int, deriving the rest.
         expect(disk.jobs.slice(-2)).toEqual([
             { kind: "noise", fit: "b_1", flight: "b.bbl#1" },
-            { kind: "front", dt: null, fit: "b_1", sigmaRate: 2, grid: { resolution: 3, idleRps: 0 } },
+            {
+                kind: "front",
+                dt: null,
+                fit: "b_1",
+                sigmaRate: null,
+                derivedSigmaRate: null,
+                tauInt: 3,
+                tauDeriv: null,
+                derivedTauDeriv: null,
+                grid: { resolution: 3, idleRps: 0 },
+            },
         ]);
         expect(store.front?.fit).toBe("b_1");
         expect(store.workspace?.fits.find((f) => f.id === "b_1")?.hasFront).toBe(true);
-        // Exploring computes no gains.
+        // Exploring computes no gains, and seeds the derived σ_rate and τ_deriv.
         expect(disk.gainsFit).toBeNull();
+        expect(store.settings.weights).toEqual({ ...DEFAULT_WEIGHTS, sigmaRate: 2, tauInt: 3, tauDeriv: 0.015 });
+
+        // At the same settings, fronts take them from the weights and keep the derived ones.
+        store.settings.weights = { ...store.settings.weights, tauDeriv: 0.01 };
+        await pipeline.exploreFront();
+        expect(disk.jobs.at(-1)).toMatchObject({
+            kind: "front",
+            sigmaRate: 2,
+            derivedSigmaRate: 2,
+            tauDeriv: 0.01,
+            derivedTauDeriv: 0.015,
+        });
+        expect(store.front?.tau_deriv).toBe(0.01);
+        expect(store.front?.derived_tau_deriv).toBe(0.015);
+        expect(store.settings.weights.tauDeriv).toBe(0.01);
+
+        // A σ_rate set by hand is kept, with the derived one; τ_deriv is derived again at it,
+        // and one set by hand is kept...
+        store.settings.weights = { ...store.settings.weights, sigmaRate: 4 };
+        await pipeline.exploreFront();
+        expect(disk.jobs.at(-1)).toMatchObject({
+            kind: "front",
+            sigmaRate: 4,
+            derivedSigmaRate: 2,
+            tauDeriv: 0.01,
+            derivedTauDeriv: null,
+        });
+        expect(store.front?.derived_sigma_rate).toBe(2);
+        expect(store.front?.derived_tau_deriv).toBe(0.03);
+        expect(store.settings.weights).toMatchObject({ sigmaRate: 4, tauDeriv: 0.01 });
+        // A new τ_int derives σ_rate again too.
+        store.settings.weights = { ...store.settings.weights, tauInt: 4 };
+        await pipeline.exploreFront();
+        expect(disk.jobs.at(-1)).toMatchObject({ kind: "front", sigmaRate: 4, derivedSigmaRate: null });
+        store.settings.weights = { ...store.settings.weights, tauInt: 3 };
+        await pipeline.exploreFront();
+        // ...and the derived one follows.
+        store.settings.weights = { ...store.settings.weights, sigmaRate: 2, tauDeriv: 0.03 };
+        await pipeline.exploreFront();
+        expect(disk.jobs.at(-1)).toMatchObject({ kind: "front", tauDeriv: null, derivedTauDeriv: null });
+        expect(store.settings.weights.tauDeriv).toBe(0.015);
+        await pipeline.exploreFront();
+        expect(disk.jobs.at(-1)).toMatchObject({ kind: "front", tauDeriv: 0.015, derivedTauDeriv: 0.015 });
 
         await pipeline.pickFrontPoint(1);
         expect(pipelineIo.applyFrontPoint).toHaveBeenLastCalledWith("/w", "b_1", 1);
-        const picked = { sigmaRate: 2, sigmaDeriv: 10, sigmaInt: 0.004 };
+        const picked = { sigmaRate: 2, sigmaDeriv: 10, sigmaInt: 0.02, tauDeriv: 0.015, tauInt: 3 };
         expect(store.settings.weights).toEqual(picked);
         expect(store.workspace?.gainsWeights).toEqual(picked);
         expect(store.gains).not.toBeNull();

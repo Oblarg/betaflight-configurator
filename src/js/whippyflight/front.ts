@@ -20,18 +20,21 @@
  */
 
 /**
- * A fit's Pareto front: gains computed over a grid of σ_deriv and σ_int (front_wfg.py), each
- * flown on the fit's plant for what the weights trade (the controller crate's `sim::margin`).
+ * A fit's Pareto front: gains computed over a grid of σ_deriv and σ_int at the time constants
+ * derived for the fit (front_wfg.py), each flown on the fit's plant for what the weights trade
+ * (the controller crate's `sim::margin`).
  */
 
-import type { Weights } from "./weights";
+import type { TimeConstants, Weights } from "./weights";
 
-export const FRONT_VERSION = 1;
+export const FRONT_VERSION = 2;
 
 /** One point of the front (`whippyflight.rs` FrontPoint). */
 export interface FrontPoint {
     sigma_deriv: number;
     sigma_int: number;
+    /** Its [σ_deriv level, σ_int level] on the grid. */
+    grid: [number, number];
     /** How long a roll knock takes to die out, ∫|rate| / knock, ms. */
     kick_iae_ms: number;
     /** Motor roughness the fit's sensor noise causes at hover, V; null without its noise. */
@@ -46,9 +49,15 @@ export interface FrontPoint {
 export interface FrontReport {
     version: number;
     fit: string;
-    /** The loop period, s, and σ_rate every point's gains were computed for. */
+    /** The loop period, s, σ_rate and time constants, s, every point's gains were computed for. */
     dt: number;
     sigma_rate: number;
+    /** σ_rate, rot/s, derived at this front's τ_int, dt and grid; absent from older fronts. */
+    derived_sigma_rate?: number | null;
+    tau_deriv: number;
+    tau_int: number;
+    /** τ_deriv, s, derived at this front's σ_rate, τ_int, dt and grid; absent from older fronts. */
+    derived_tau_deriv?: number | null;
     /** The grid they were scheduled over (`Grid`); absent from fronts computed before it was recorded. */
     resolution?: number | null;
     idle_rps?: number | null;
@@ -103,12 +112,63 @@ export function paretoOptimal(points: FrontPoint[], measures: FrontMeasure[] = F
 
 /** The point with weights `weights`, if the front has them. */
 export function frontIndexOf(report: FrontReport, weights: Weights | null): number {
-    if (!weights || weights.sigmaRate !== report.sigma_rate) {
+    if (
+        !weights ||
+        weights.sigmaRate !== report.sigma_rate ||
+        weights.tauDeriv !== report.tau_deriv ||
+        weights.tauInt !== report.tau_int
+    ) {
         return -1;
     }
     return report.points.findIndex((p) => p.sigma_deriv === weights.sigmaDeriv && p.sigma_int === weights.sigmaInt);
 }
 
+/** Whether the front was computed at τ_int of `weights`, `grid` and loop period `dt`, s (null: not known yet). */
+function sameSettings(
+    report: FrontReport,
+    weights: Weights,
+    grid: { resolution: number; idleRps: number },
+    dt: number | null,
+): boolean {
+    return (
+        report.tau_int === weights.tauInt &&
+        report.resolution === grid.resolution &&
+        report.idle_rps === grid.idleRps &&
+        (dt === null || Math.abs(report.dt - dt) <= 0.01 * dt)
+    );
+}
+
+/** @returns the front's derived σ_rate, rot/s, if it was derived at these settings (as `sameSettings`); else null. */
+export function derivedSigmaRate(
+    report: FrontReport,
+    weights: Weights,
+    grid: { resolution: number; idleRps: number },
+    dt: number | null,
+): number | null {
+    return sameSettings(report, weights, grid, dt) ? (report.derived_sigma_rate ?? null) : null;
+}
+
+/** @returns the front's derived τ_deriv, s, if it was derived at these settings and σ_rate of `weights`; else null. */
+export function derivedTauDeriv(
+    report: FrontReport,
+    weights: Weights,
+    grid: { resolution: number; idleRps: number },
+    dt: number | null,
+): number | null {
+    return report.sigma_rate === weights.sigmaRate && sameSettings(report, weights, grid, dt)
+        ? (report.derived_tau_deriv ?? null)
+        : null;
+}
+
+export function frontTimeConstants(report: FrontReport): TimeConstants {
+    return { tauDeriv: report.tau_deriv, tauInt: report.tau_int };
+}
+
 export function frontWeights(report: FrontReport, point: FrontPoint): Weights {
-    return { sigmaRate: report.sigma_rate, sigmaDeriv: point.sigma_deriv, sigmaInt: point.sigma_int };
+    return {
+        sigmaRate: report.sigma_rate,
+        sigmaDeriv: point.sigma_deriv,
+        sigmaInt: point.sigma_int,
+        ...frontTimeConstants(report),
+    };
 }

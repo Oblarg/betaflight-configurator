@@ -271,6 +271,8 @@
                     <WeightControls
                         v-model="store.settings.weights"
                         :recorded="store.gains ? (store.workspace?.gainsWeights ?? null) : null"
+                        :derived-sigma-rate="activeFront?.derived_sigma_rate ?? null"
+                        :derived-tau-deriv="activeFront?.derived_tau_deriv ?? null"
                         :disabled="store.busy !== null"
                     />
                     <FrontPanel
@@ -279,7 +281,9 @@
                         :current="frontCurrent"
                         :stale="frontStale"
                         :disabled="!canWork"
+                        :recompute-disabled="!canWork || !store.diagnostics || !pipeline.gainsLoop.value"
                         @pick="pipeline.pickFrontPoint"
+                        @recompute="pipeline.exploreFront"
                     />
                     <p v-if="gridStale" class="text-sm text-warning">{{ gridStale }}</p>
                     <p v-if="store.gains && !gainsFromActiveFit" class="text-sm text-warning">
@@ -460,6 +464,7 @@ const frontCurrent = computed(() =>
         ? frontIndexOf(store.front, store.workspace.gainsWeights)
         : -1,
 );
+const activeFront = computed(() => (store.front && store.front.fit === store.activeFit ? store.front : null));
 /** Why the front no longer matches the gains "Compute gains" would make, if it doesn't. */
 const frontStale = computed(() => {
     const front = store.front;
@@ -471,7 +476,19 @@ const frontStale = computed(() => {
         return t("whippyflightFrontStaleLoop", { front: hz(front.dt), now: hz(loop.dt) });
     }
     if (front.sigma_rate !== store.settings.weights.sigmaRate) {
-        return t("whippyflightFrontStaleRate", { front: front.sigma_rate });
+        return t("whippyflightFrontStaleRate", {
+            front: front.sigma_rate,
+            now: store.settings.weights.sigmaRate,
+        });
+    }
+    if (front.tau_int !== store.settings.weights.tauInt) {
+        return t("whippyflightFrontStaleTauInt", { front: front.tau_int, now: store.settings.weights.tauInt });
+    }
+    if (front.tau_deriv !== store.settings.weights.tauDeriv) {
+        return t("whippyflightFrontStaleTauDeriv", {
+            front: Number((1e3 * front.tau_deriv).toPrecision(3)),
+            now: Number((1e3 * store.settings.weights.tauDeriv).toPrecision(3)),
+        });
     }
     const grid = pipeline.gainsGrid.value;
     if (front.resolution == null || front.idle_rps == null) {

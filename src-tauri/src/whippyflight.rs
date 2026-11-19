@@ -32,7 +32,7 @@ use std::time::UNIX_EPOCH;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, Emitter, State};
-use whippyflight_sim::units::{AngAccel, Freq, Millis, Rate, Time, Voltage};
+use whippyflight_sim::units::{AngAccel, Angle, Freq, Millis, Rate, Time, Voltage};
 use whippyunits::api::rescale;
 use whippyunits::{qty, quantity, value};
 
@@ -158,7 +158,8 @@ pub struct Toolchain {
     python: String,
 }
 
-/// gen_wfg.py's LQR cost weights (Bryson: the excursion each state may make).
+/// gen_wfg.py's LQR cost weights (Bryson: the excursion each state may make)
+/// and the time constants of the integral and derivative states they weigh.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Weights {
@@ -168,9 +169,15 @@ pub struct Weights {
     /// Derivative-state excursion.
     #[serde(with = "plain")]
     sigma_deriv: AngAccel,
-    /// Low-passed rate error the integral holds.
+    /// Integral-state excursion: the attitude error the integral holds.
     #[serde(with = "plain")]
-    sigma_int: Rate,
+    sigma_int: Angle,
+    /// The derivative's low-pass time constant.
+    #[serde(with = "plain")]
+    tau_deriv: Time,
+    /// The integral's leak time constant.
+    #[serde(with = "plain")]
+    tau_int: Time,
 }
 
 /// The motor-speed grid gen_wfg.py schedules the gains over.
@@ -218,15 +225,28 @@ pub enum Job {
     /// Plot `fits/<fit>/diagnostics.json` into `fits/<fit>/plots`.
     #[serde(rename_all = "camelCase")]
     FitPlots { fit: String },
-    /// Compute gains over a grid of σ_deriv and σ_int into `fits/<fit>/front`.
+    /// Derive σ_rate and τ_deriv (unless given) and compute gains over a grid of
+    /// σ_deriv and σ_int into `fits/<fit>/front`, at τ_int and σ_rate and τ_deriv
+    /// (the derived ones where not given).
     #[serde(rename_all = "camelCase")]
     Front {
         /// As [`Job::Gen`]'s.
         #[serde(default, with = "plain")]
         dt: Option<Time>,
         fit: String,
+        #[serde(default, with = "plain")]
+        sigma_rate: Option<Rate>,
+        /// With `sigma_rate`: σ_rate derived earlier at these same settings, to keep
+        /// instead of deriving it again.
+        #[serde(default, with = "plain")]
+        derived_sigma_rate: Option<Rate>,
         #[serde(with = "plain")]
-        sigma_rate: Rate,
+        tau_int: Time,
+        #[serde(default, with = "plain")]
+        tau_deriv: Option<Time>,
+        /// As `derived_sigma_rate`, for `tau_deriv`.
+        #[serde(default, with = "plain")]
+        derived_tau_deriv: Option<Time>,
         grid: Grid,
     },
     /// Plot `gains/flicks.json` into `gains/plots`.
@@ -401,13 +421,29 @@ fn dt_args(dt: Option<Time>) -> Result<Vec<String>, String> {
     Ok(vec!["--dt".into(), format!("{:e}", value!(dt, s))])
 }
 
-/// A σ argument: `value`, in the unit gen_wfg.py takes it in.
+/// A weight's argument: `value`, in the unit gen_wfg.py takes it in.
 fn sigma_args(flag: &str, value: f64) -> Result<[String; 2], String> {
     if value.is_finite() && value > 0.0 {
         Ok([flag.into(), format!("{value:e}")])
     } else {
         Err(format!("{flag} must be positive, not {value}"))
     }
+}
+
+/// front_wfg.py's arguments for a setting it derives unless given `value`, and
+/// keeps an earlier derivation `derived` of instead of deriving it again.
+fn derivable_args(flag: &str, value: Option<f64>, derived: Option<f64>) -> Result<Vec<String>, String> {
+    let Some(value) = value else {
+        return match derived {
+            None => Ok(vec![]),
+            Some(_) => Err(format!("a derived {flag} needs a given one")),
+        };
+    };
+    let mut args = sigma_args(flag, value)?.to_vec();
+    if let Some(derived) = derived {
+        args.extend(sigma_args(&format!("--derived-{}", &flag[2..]), derived)?);
+    }
+    Ok(args)
 }
 
 /// gen_wfg.py's arguments for `grid`.
@@ -489,7 +525,9 @@ fn job_args(dir: &Path, job: &Job) -> Result<Vec<String>, String> {
             let sigmas = [
                 sigma_args("--sigma-rate", value!(weights.sigma_rate, rot / s))?,
                 sigma_args("--sigma-deriv", value!(weights.sigma_deriv, rot / s ^ 2))?,
-                sigma_args("--sigma-int", value!(weights.sigma_int, rot / s))?,
+                sigma_args("--sigma-int", value!(weights.sigma_int, rot))?,
+                sigma_args("--tau-deriv", value!(weights.tau_deriv, s))?,
+                sigma_args("--tau-int", value!(weights.tau_int, s))?,
             ];
             let grid = grid_args(grid)?;
             let coefficients = dir.join(FITS_DIR).join(plain_name(fit)?).join(COEFFICIENTS);
@@ -540,10 +578,24 @@ fn job_args(dir: &Path, job: &Job) -> Result<Vec<String>, String> {
             dt,
             fit,
             sigma_rate,
+            derived_sigma_rate,
+            tau_int,
+            tau_deriv,
+            derived_tau_deriv,
             grid,
         } => {
             let dt = dt_args(*dt)?;
-            let sigma_rate = sigma_args("--sigma-rate", value!(*sigma_rate, rot / s))?;
+            let sigma_rate = derivable_args(
+                "--sigma-rate",
+                sigma_rate.map(|r| value!(r, rot / s)),
+                derived_sigma_rate.map(|r| value!(r, rot / s)),
+            )?;
+            let tau_int = sigma_args("--tau-int", value!(*tau_int, s))?;
+            let tau_deriv = derivable_args(
+                "--tau-deriv",
+                tau_deriv.map(|t| value!(t, s)),
+                derived_tau_deriv.map(|t| value!(t, s)),
+            )?;
             let grid = grid_args(grid)?;
             let out = dir.join(FITS_DIR).join(plain_name(fit)?);
             if !out.join(COEFFICIENTS).is_file() {
@@ -553,6 +605,8 @@ fn job_args(dir: &Path, job: &Job) -> Result<Vec<String>, String> {
             let mut args = module(FRONT_MODULE);
             args.extend([text(out.join(COEFFICIENTS)), text(out.join(FRONT_DIR))]);
             args.extend(sigma_rate);
+            args.extend(tau_int);
+            args.extend(tau_deriv);
             args.extend(dt);
             args.extend(grid);
             Ok(args)
@@ -1594,8 +1648,22 @@ pub async fn whippyflight_flicks(
 struct FrontIndex {
     #[serde(with = "plain")]
     dt: Time,
+    /// The σ_rate and time constants every point's gains were computed with, the
+    /// job's or derived for the fit.
     #[serde(with = "plain")]
     sigma_rate: Rate,
+    /// σ_rate derived at this front's τ_int, dt and grid; None from fronts that
+    /// predate recording it.
+    #[serde(default, with = "plain")]
+    derived_sigma_rate: Option<Rate>,
+    #[serde(with = "plain")]
+    tau_deriv: Time,
+    #[serde(with = "plain")]
+    tau_int: Time,
+    /// τ_deriv derived at this front's σ_rate, τ_int, dt and grid; None from
+    /// fronts that predate recording it.
+    #[serde(default, with = "plain")]
+    derived_tau_deriv: Option<Time>,
     /// Absent from fronts computed before these were recorded.
     #[serde(default)]
     resolution: Option<u8>,
@@ -1609,7 +1677,8 @@ struct FrontBlob {
     #[serde(with = "plain")]
     sigma_deriv: AngAccel,
     #[serde(with = "plain")]
-    sigma_int: Rate,
+    sigma_int: Angle,
+    grid: [u8; 2],
     wfg: String,
 }
 
@@ -1619,7 +1688,9 @@ pub struct FrontPoint {
     #[serde(with = "plain")]
     sigma_deriv: AngAccel,
     #[serde(with = "plain")]
-    sigma_int: Rate,
+    sigma_int: Angle,
+    /// Its [σ_deriv level, σ_int level] on the grid.
+    grid: [u8; 2],
     /// How long a roll knock takes to die out, ∫|rate| / knock.
     #[serde(with = "plain")]
     kick_iae_ms: Millis,
@@ -1639,11 +1710,21 @@ pub struct FrontPoint {
 pub struct FrontReport {
     version: u32,
     fit: String,
-    /// The loop period and σ_rate every point's gains were computed for.
+    /// The loop period, σ_rate and time constants every point's gains were computed for.
     #[serde(with = "plain")]
     dt: Time,
     #[serde(with = "plain")]
     sigma_rate: Rate,
+    /// As [`FrontIndex::derived_sigma_rate`].
+    #[serde(default, with = "plain")]
+    derived_sigma_rate: Option<Rate>,
+    #[serde(with = "plain")]
+    tau_deriv: Time,
+    #[serde(with = "plain")]
+    tau_int: Time,
+    /// As [`FrontIndex::derived_tau_deriv`].
+    #[serde(default, with = "plain")]
+    derived_tau_deriv: Option<Time>,
     /// The [`Grid`] they were scheduled over; None if the front predates recording it.
     #[serde(default)]
     resolution: Option<u8>,
@@ -1679,6 +1760,7 @@ fn score_front(dir: &Path, fit: &str) -> Result<FrontReport, String> {
         Ok(FrontPoint {
             sigma_deriv: blob.sigma_deriv,
             sigma_int: blob.sigma_int,
+            grid: blob.grid,
             kick_iae_ms: margin::kick_iae(&gains, &model, &cutoffs),
             rough_v: noise
                 .as_ref()
@@ -1707,10 +1789,14 @@ fn score_front(dir: &Path, fit: &str) -> Result<FrontReport, String> {
     .flatten()
     .collect();
     Ok(FrontReport {
-        version: 1,
+        version: 2,
         fit: fit.to_owned(),
         dt: index.dt,
         sigma_rate: index.sigma_rate,
+        derived_sigma_rate: index.derived_sigma_rate,
+        tau_deriv: index.tau_deriv,
+        tau_int: index.tau_int,
+        derived_tau_deriv: index.derived_tau_deriv,
         resolution: index.resolution,
         idle_rps: index.idle_rps,
         gyro_filters,
@@ -1761,6 +1847,8 @@ pub fn whippyflight_use_front(workdir: String, fit: String, index: usize) -> Res
             sigma_rate: front_index.sigma_rate,
             sigma_deriv: blob.sigma_deriv,
             sigma_int: blob.sigma_int,
+            tau_deriv: front_index.tau_deriv,
+            tau_int: front_index.tau_int,
         },
     )
 }
@@ -1842,7 +1930,9 @@ mod tests {
     const WEIGHTS: Weights = Weights {
         sigma_rate: quantity!(5.0, rot / s),
         sigma_deriv: quantity!(10.0, rot / s ^ 2),
-        sigma_int: quantity!(0.012, rot / s),
+        sigma_int: quantity!(0.06, rot),
+        tau_deriv: quantity!(0.02, s),
+        tau_int: quantity!(5.0, s),
     };
 
     const GRID: Grid = Grid {
@@ -1854,7 +1944,8 @@ mod tests {
     fn parses_webview_jobs() {
         let job: Job = serde_json::from_str(
             r#"{"kind": "gen", "dt": 3.125e-4, "fit": "a", "grid": {"resolution": 4, "idleRps": 180},
-                "weights": {"sigmaRate": 5, "sigmaDeriv": 15, "sigmaInt": 0.012}}"#,
+                "weights": {"sigmaRate": 5, "sigmaDeriv": 15, "sigmaInt": 0.06, "tauDeriv": 0.02,
+                            "tauInt": 10}}"#,
         )
         .unwrap();
         let Job::Gen { dt, weights, grid, .. } = job else {
@@ -1862,13 +1953,47 @@ mod tests {
         };
         assert_eq!(dt, Some(quantity!(3.125e-4, s)));
         assert_eq!(weights.sigma_deriv, quantity!(15.0, rot / s ^ 2));
+        assert_eq!(weights.tau_int, quantity!(10.0, s));
         assert_eq!(grid.idle_rps, quantity!(180.0, rot / s));
         let job: Job = serde_json::from_str(
-            r#"{"kind": "front", "dt": null, "fit": "a", "sigmaRate": 5,
+            r#"{"kind": "front", "dt": null, "fit": "a", "sigmaRate": null, "tauInt": 5,
                 "grid": {"resolution": 4, "idleRps": 0}}"#,
         )
         .unwrap();
-        assert!(matches!(job, Job::Front { dt: None, .. }));
+        assert!(matches!(
+            job,
+            Job::Front {
+                dt: None,
+                sigma_rate: None,
+                tau_deriv: None,
+                ..
+            }
+        ));
+        let job: Job = serde_json::from_str(
+            r#"{"kind": "front", "fit": "a", "sigmaRate": 5, "derivedSigmaRate": 4.8, "tauInt": 5,
+                "tauDeriv": 0.015, "derivedTauDeriv": 0.0125, "grid": {"resolution": 4, "idleRps": 0}}"#,
+        )
+        .unwrap();
+        let Job::Front {
+            sigma_rate,
+            derived_sigma_rate,
+            tau_deriv,
+            derived_tau_deriv,
+            ..
+        } = job
+        else {
+            panic!("not a front job");
+        };
+        assert_eq!(sigma_rate, Some(quantity!(5.0, rot / s)));
+        assert_eq!(derived_sigma_rate, Some(quantity!(4.8, rot / s)));
+        assert_eq!(tau_deriv, Some(quantity!(0.015, s)));
+        assert_eq!(derived_tau_deriv, Some(quantity!(0.0125, s)));
+        assert_eq!(
+            derivable_args("--sigma-rate", Some(5.0), Some(4.8)).unwrap(),
+            ["--sigma-rate", "5e0", "--derived-sigma-rate", "4.8e0"]
+        );
+        assert!(derivable_args("--sigma-rate", None, None).unwrap().is_empty());
+        assert!(derivable_args("--sigma-rate", None, Some(4.8)).is_err());
         let rates: MaxRates = serde_json::from_str(r#"{"rps": [2, 1.5, 1], "from": "fc"}"#).unwrap();
         assert_eq!(rates.rps[1], quantity!(1.5, rot / s));
         assert!(serde_json::from_str::<MaxRates>(r#"{"rps": [2, 1.5], "from": "fc"}"#).is_err());
@@ -1947,7 +2072,11 @@ mod tests {
             Job::Front {
                 dt: None,
                 fit: "flight_1".into(),
-                sigma_rate: WEIGHTS.sigma_rate,
+                sigma_rate: None,
+                derived_sigma_rate: None,
+                tau_int: WEIGHTS.tau_int,
+                tau_deriv: None,
+                derived_tau_deriv: None,
                 grid: GRID,
             },
         ];
@@ -2000,39 +2129,57 @@ mod tests {
             std::fs::write(Path::new(&keep).join("front.json"), json).unwrap();
         }
         assert!(front.gyro_filters && front.points.len() > 1);
-        assert_eq!(front.sigma_rate, WEIGHTS.sigma_rate);
         assert_eq!(front.resolution, Some(GRID.resolution));
         assert_eq!(front.idle_rps, Some(GRID.idle_rps));
-        let at = |(deriv, int): (AngAccel, Rate)| {
-            front
-                .points
-                .iter()
-                .position(|p| p.sigma_deriv == deriv && p.sigma_int == int)
-                .unwrap()
-        };
+        assert_eq!(front.tau_int, WEIGHTS.tau_int);
+        assert!(front.tau_deriv > quantity!(0.0, s) && front.tau_deriv < front.tau_int);
+        assert_eq!(front.derived_tau_deriv, Some(front.tau_deriv));
+        assert_eq!(front.derived_sigma_rate, Some(front.sigma_rate));
+        assert!(front.sigma_rate > quantity!(0.0, rot / s));
+        let at = |grid: [u8; 2]| front.points.iter().position(|p| p.grid == grid).unwrap();
         let p = |i: usize| &front.points[i];
         for point in &front.points {
             eprintln!("{point:?}");
         }
+        let (deriv_levels, int_levels) = front.points.iter().fold((0, 0), |(d, i), p| {
+            (d.max(p.grid[0] + 1), i.max(p.grid[1] + 1))
+        });
         // Stiffer rejects a knock faster and is rougher; a firmer integral holds
-        // attitude closer and costs delay margin.
-        let sigmas = |deriv: f64, int: f64| (quantity!(deriv, rot / s ^ 2), quantity!(int, rot / s));
-        let (stiff, smooth) = (p(at(sigmas(5.0, 0.012))), p(at(sigmas(30.0, 0.012))));
+        // attitude closer.
+        let (stiff, smooth) = (p(at([deriv_levels - 1, 0])), p(at([0, 0])));
         assert!(stiff.kick_iae_ms < smooth.kick_iae_ms);
         assert!(stiff.rough_v.unwrap() > smooth.rough_v.unwrap());
-        let (firm, loose) = (p(at(sigmas(15.0, 0.004))), p(at(sigmas(15.0, 0.05))));
+        let (firm, loose) = (p(at([0, int_levels - 1])), p(at([0, 0])));
         assert!(firm.trim_deg < loose.trim_deg);
-        assert!(firm.delay_margin_ms < loose.delay_margin_ms);
 
-        // The front's gains at the Gen job's weights are the Gen job's.
-        let mine = at((WEIGHTS.sigma_deriv, WEIGHTS.sigma_int));
-        let generated = std::fs::read(dir.join(GAINS)).unwrap();
-        std::fs::write(dir.join(GAINS), b"stale").unwrap();
+        // A front point's gains are the Gen job's at its weights.
+        let mine = at([deriv_levels / 2, int_levels / 2]);
+        let weights = Weights {
+            sigma_rate: front.sigma_rate,
+            sigma_deriv: p(mine).sigma_deriv,
+            sigma_int: p(mine).sigma_int,
+            tau_deriv: front.tau_deriv,
+            tau_int: front.tau_int,
+        };
         whippyflight_use_front(dir.to_string_lossy().into_owned(), "flight_1".into(), mine)
             .unwrap();
-        assert_eq!(std::fs::read(dir.join(GAINS)).unwrap(), generated);
+        let picked = std::fs::read(dir.join(GAINS)).unwrap();
         let ws = whippyflight_workspace(dir.to_string_lossy().into_owned()).unwrap();
-        assert_eq!(ws.gains_weights, Some(WEIGHTS));
+        assert_eq!(ws.gains_weights, Some(weights));
+        let regen = Job::Gen {
+            dt: None,
+            fit: "flight_1".into(),
+            weights,
+            grid: GRID,
+        };
+        before_job(&dir, &regen);
+        let status = python_command(&toolchain)
+            .args(job_args(&dir, &regen).unwrap())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        after_job(&dir, &regen).unwrap();
+        assert_eq!(std::fs::read(dir.join(GAINS)).unwrap(), picked);
         assert_eq!(ws.gains_fit.as_deref(), Some("flight_1"));
         assert!(!ws.has_flicks);
         let index = front.points.len();

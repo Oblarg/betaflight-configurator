@@ -28,6 +28,10 @@
  * delay margin peaks near the default and falls either side. σ_int trades how firmly the integral
  * holds attitude against a CG shift against delay margin. σ_rate barely matters over 1–20 rot/s,
  * so it's left to the advanced settings.
+ *
+ * The derivative state's time constant changes what the weights weigh, so it's derived per fit
+ * with its front (front_wfg.py) rather than traded on a slider. The integral's leak would be set
+ * by how long gusts last, which the logs don't show, so it's left at a default to adjust by hand.
  */
 
 export interface Weights {
@@ -35,12 +39,24 @@ export interface Weights {
     sigmaRate: number;
     /** Derivative-state excursion, rot/s². */
     sigmaDeriv: number;
-    /** Low-passed rate error the integral holds, rot/s. */
+    /** Integral-state excursion: the attitude error the integral holds, rot. */
     sigmaInt: number;
+    /** The derivative's low-pass time constant, s. */
+    tauDeriv: number;
+    /** The integral's leak time constant, s. */
+    tauInt: number;
 }
 
+export type TimeConstants = Pick<Weights, "tauDeriv" | "tauInt">;
+
 /** gen_wfg.py's defaults. */
-export const DEFAULT_WEIGHTS: Readonly<Weights> = { sigmaRate: 5, sigmaDeriv: 15, sigmaInt: 0.012 };
+export const DEFAULT_WEIGHTS: Readonly<Weights> = {
+    sigmaRate: 5,
+    sigmaDeriv: 15,
+    sigmaInt: 0.06,
+    tauDeriv: 0.02,
+    tauInt: 5,
+};
 
 /** A slider's log-scale span of one weight: its value at 0 and at {@link SLIDER_MAX}. */
 export type WeightRange = readonly [number, number];
@@ -48,7 +64,7 @@ export type WeightRange = readonly [number, number];
 /** Stiff (left) to smooth (right). */
 export const STIFFNESS_RANGE: WeightRange = [5, 30];
 /** Firm (left) to loose (right). */
-export const INTEGRAL_RANGE: WeightRange = [0.004, 0.05];
+export const INTEGRAL_RANGE: WeightRange = [0.02, 0.25];
 export const SLIDER_MAX = 100;
 
 /** Where `value` sits on a slider over `range`, clamped to its ends. */
@@ -62,6 +78,15 @@ export function weightAt(position: number, [lo, hi]: WeightRange): number {
     return Number((lo * (hi / lo) ** (position / SLIDER_MAX)).toPrecision(3));
 }
 
+export function sameTimeConstants(a: TimeConstants, b: TimeConstants): boolean {
+    return a.tauDeriv === b.tauDeriv && a.tauInt === b.tauInt;
+}
+
 export function sameWeights(a: Weights, b: Weights): boolean {
-    return a.sigmaRate === b.sigmaRate && a.sigmaDeriv === b.sigmaDeriv && a.sigmaInt === b.sigmaInt;
+    return (
+        a.sigmaRate === b.sigmaRate &&
+        a.sigmaDeriv === b.sigmaDeriv &&
+        a.sigmaInt === b.sigmaInt &&
+        sameTimeConstants(a, b)
+    );
 }

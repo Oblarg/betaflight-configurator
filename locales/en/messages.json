@@ -903,11 +903,16 @@
     "whippyflightWeightsReset": { "message": "Defaults" },
     "whippyflightWeightsChanged": { "message": "Changed since these gains were computed; Compute gains to apply." },
     "whippyflightWeightsAdvancedHint": {
-        "message": "The LQR cost weights: how far each state may stray before it costs as much as a volt of motor command. Smaller holds that state harder. Rate barely matters; the sliders set the other two."
+        "message": "The LQR cost weights: how far each state may stray before it costs as much as a volt of motor command. Smaller holds that state harder. Explore tradeoffs derives rate for this drone; the sliders set the other two."
     },
     "whippyflightSigmaRate": { "message": "σ rate, rot/s" },
     "whippyflightSigmaDeriv": { "message": "σ derivative, rot/s²" },
-    "whippyflightSigmaInt": { "message": "σ integral, rot/s" },
+    "whippyflightSigmaInt": { "message": "σ integral, rot" },
+    "whippyflightTauDeriv": { "message": "τ derivative, ms" },
+    "whippyflightTauInt": { "message": "τ integral, s" },
+    "whippyflightTauHint": {
+        "message": "Time constants of the derivative's low-pass and the integral's leak. Explore tradeoffs derives the derivative's for this drone. The integral's should match how fast the wind changes."
+    },
     "whippyflightExploreFront": { "message": "Explore tradeoffs" },
     "whippyflightExploreFrontHint": {
         "message": "Compute gains at a grid of tuning weights and fly each on the fit's plant, to pick from what they trade. Takes several seconds."
@@ -923,19 +928,26 @@
     "whippyflightFrontTrim": { "message": "5% CG shift" },
     "whippyflightFrontClick": { "message": "click to use these gains" },
     "whippyflightFrontNote": {
-        "message": "Each of the {{n}} points is a set of gains, flown on the fit's plant. Knock recovery is how long a 0.2 rot/s roll knock at hover takes to die out (∫|rate| ÷ knock); hover roughness is what the logs' sensor noise adds to the motor voltages; delay margin and CG shift are as for the flicks. Filled points are each chart's Pareto front: no other point is better on both of its axes. Lines join equal attitude-hold weights on the left and equal stiffness on the right. Red: under {{low}} ms of delay margin. Ringed: the current gains."
+        "message": "Each of the {{n}} points is a set of gains at τ derivative {{tauDeriv}} ms and τ integral {{tauInt}} s, flown on the fit's plant; {{hidden}} more that don't fly cleanly aren't drawn. Knock recovery is how long a 0.2 rot/s roll knock at hover takes to die out (∫|rate| ÷ knock); hover roughness is what the logs' sensor noise adds to the motor voltages; delay margin and CG shift are as for the flicks. Filled points are each chart's Pareto front: no other point is better on both of its axes. Lines join equal attitude-hold weights on the left and the same stiffness step on the right. Ringed: the current gains."
     },
+    "whippyflightFrontRecompute": { "message": "Recompute" },
     "whippyflightFrontStaleLoop": {
-        "message": "This front was computed for {{front}}; gains would now be computed for {{now}}. Explore again before picking."
+        "message": "This front was computed for {{front}}; gains would now be computed for {{now}}."
     },
     "whippyflightFrontStaleRate": {
-        "message": "This front was computed with σ rate {{front}}, not the advanced setting's. Explore again, or picking a point sets it back."
+        "message": "This front was computed with σ rate {{front}} rot/s, not the advanced setting's {{now}} rot/s."
+    },
+    "whippyflightFrontStaleTauInt": {
+        "message": "This front was computed with τ integral {{front}} s, not the setting's {{now}} s."
+    },
+    "whippyflightFrontStaleTauDeriv": {
+        "message": "This front was computed with τ derivative {{front}} ms, not the setting's {{now}} ms."
     },
     "whippyflightFrontStaleGrid": {
-        "message": "This front was computed over a grid of {{front}} speeds per motor from {{frontIdle}} rev/s idle, not {{now}} from {{nowIdle}}. Explore again."
+        "message": "This front was computed over a grid of {{front}} speeds per motor from {{frontIdle}} rev/s idle, not {{now}} from {{nowIdle}}."
     },
     "whippyflightFrontStaleGridUnknown": {
-        "message": "This front predates recording its speed grid, so it may not match the gains Compute gains would make. Explore again."
+        "message": "This front predates recording its speed grid, so it may not match the gains Compute gains would make."
     },
     "whippyflightFrontNoFilters": {
         "message": "The fit's gyro filters aren't modeled, so these are measured without them; the delay margins are optimistic."

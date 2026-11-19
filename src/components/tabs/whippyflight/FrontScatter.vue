@@ -88,8 +88,8 @@
                     :cx="xScale(p.x)"
                     :cy="yScale(p.y)"
                     :r="p.index === hovered ? 6 : 4"
-                    :fill="p.optimal ? color(p) : 'none'"
-                    :stroke="color(p)"
+                    :fill="p.optimal ? POINT_COLOR : 'none'"
+                    :stroke="POINT_COLOR"
                     stroke-width="1.2"
                 />
             </g>
@@ -108,8 +108,6 @@ export interface ScatterPoint {
     y: number;
     /** Not dominated by any other point. */
     optimal: boolean;
-    /** Drawn in the warning color. */
-    warn: boolean;
 }
 
 const props = defineProps<{
@@ -131,7 +129,6 @@ const WIDTH = 480;
 const HEIGHT = 260;
 const MARGIN = { top: 10, right: 12, bottom: 30, left: 44 };
 const POINT_COLOR = "var(--color-axis-pitch)";
-const WARN_COLOR = "var(--chart-danger-color)";
 
 function padded(values: number[]): [number, number] {
     const [lo, hi] = d3.extent(values) as [number, number];
@@ -162,10 +159,6 @@ const paths = computed(() => {
         .y((p) => yScale.value(p.y));
     return props.lines.map((run) => line(run.flatMap((i) => byIndex.get(i) ?? [])) ?? "");
 });
-
-function color(p: ScatterPoint): string {
-    return p.warn ? WARN_COLOR : POINT_COLOR;
-}
 
 function format(value: number): string {
     return String(Number(value.toPrecision(3)));

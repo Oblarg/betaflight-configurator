@@ -9,7 +9,8 @@ import {
 
 const point = (over: Partial<FrontPoint>): FrontPoint => ({
     sigma_deriv: 15,
-    sigma_int: 0.012,
+    sigma_int: 0.06,
+    grid: [0, 0],
     kick_iae_ms: 50,
     rough_v: 0.003,
     delay_margin_ms: 3,
@@ -46,10 +47,16 @@ describe("WhippyFlight Pareto front", () => {
     it("finds the point with given weights", () => {
         const report = {
             sigma_rate: 5,
+            tau_deriv: 0.015,
+            tau_int: 5,
             points: [point({}), point({ sigma_deriv: 10 })],
         } as FrontReport;
-        expect(frontIndexOf(report, { sigmaRate: 5, sigmaDeriv: 10, sigmaInt: 0.012 })).toBe(1);
-        expect(frontIndexOf(report, { sigmaRate: 2, sigmaDeriv: 10, sigmaInt: 0.012 })).toBe(-1);
+        const weights = { sigmaRate: 5, sigmaDeriv: 10, sigmaInt: 0.06, tauDeriv: 0.015, tauInt: 5 };
+        expect(frontIndexOf(report, weights)).toBe(1);
+        expect(frontIndexOf(report, { ...weights, sigmaRate: 2 })).toBe(-1);
+        // Its gains were computed with its time constants, not others.
+        expect(frontIndexOf(report, { ...weights, tauDeriv: 0.02 })).toBe(-1);
+        expect(frontIndexOf(report, { ...weights, tauInt: 10 })).toBe(-1);
         expect(frontIndexOf(report, null)).toBe(-1);
     });
 });

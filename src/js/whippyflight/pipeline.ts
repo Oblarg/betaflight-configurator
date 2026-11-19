@@ -156,8 +156,22 @@ export type Job =
     | { kind: "gen"; dt: number | null; fit: string; weights: Weights; grid: Grid }
     /** Extract the sensor noise of `flight` (a spec) into `fits/<fit>/noise.bin`. */
     | { kind: "noise"; fit: string; flight: string }
-    /** Compute gains over a grid of σ_deriv and σ_int into `fits/<fit>/front`; `dt` as gen's. */
-    | { kind: "front"; dt: number | null; fit: string; sigmaRate: number; grid: Grid }
+    /**
+     * Compute gains over a grid of σ_deriv and σ_int into `fits/<fit>/front`; `dt` as gen's.
+     * `sigmaRate`, `tauDeriv` null: derive it; `derivedSigmaRate`, `derivedTauDeriv` (with the
+     * given one) its earlier derivation at the same settings, kept instead of deriving it again.
+     */
+    | {
+          kind: "front";
+          dt: number | null;
+          fit: string;
+          sigmaRate: number | null;
+          derivedSigmaRate: number | null;
+          tauInt: number;
+          tauDeriv: number | null;
+          derivedTauDeriv: number | null;
+          grid: Grid;
+      }
     /** Plot `fits/<fit>/diagnostics.json` into `fits/<fit>/plots`. */
     | { kind: "fitPlots"; fit: string }
     /** Plot `gains/flicks.json` into `gains/plots`. */

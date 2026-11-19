@@ -58,7 +58,7 @@ import {
     type MaxRates,
     type RatesSource,
 } from "@/js/whippyflight/flicks";
-import { frontWeights } from "@/js/whippyflight/front";
+import { derivedSigmaRate, derivedTauDeriv, frontWeights } from "@/js/whippyflight/front";
 import RateCurve from "@/js/RateCurve";
 import { fitId, listFlights, specOfLabel, unscannedLogs, type Flight } from "@/js/whippyflight/flights";
 import { parseGainBlob } from "@/js/whippyflight/protocol";
@@ -500,6 +500,18 @@ export function useWhippyFlightPipeline(): WhippyFlightPipeline {
     function exploreFront(): Promise<void> {
         return step("front", async () => {
             const { fit, dt } = await gainsTarget();
+            const weights = store.settings.weights;
+            const prior = store.front?.fit === fit ? store.front : null;
+            const loopDt = gainsLoop.value?.dt ?? null;
+            // σ_rate and τ_deriv are derived again when the settings they were derived at change;
+            // one set by hand (not the last derived) is kept, else it follows the derived one.
+            const derivedRate = prior ? derivedSigmaRate(prior, weights, gainsGrid.value, loopDt) : null;
+            const rateByHand = prior?.derived_sigma_rate != null && weights.sigmaRate !== prior.derived_sigma_rate;
+            const sigmaRate = derivedRate !== null || rateByHand ? weights.sigmaRate : null;
+            const derivedTau =
+                prior && sigmaRate !== null ? derivedTauDeriv(prior, weights, gainsGrid.value, loopDt) : null;
+            const tauByHand = prior?.derived_tau_deriv != null && weights.tauDeriv !== prior.derived_tau_deriv;
+            const tauDeriv = derivedTau !== null || tauByHand ? weights.tauDeriv : null;
             store.front = null;
             store.output = [];
             // Roughness needs the fit's sensor noise.
@@ -508,10 +520,20 @@ export function useWhippyFlightPipeline(): WhippyFlightPipeline {
                 kind: "front",
                 dt,
                 fit,
-                sigmaRate: store.settings.weights.sigmaRate,
+                sigmaRate,
+                derivedSigmaRate: derivedRate,
+                tauInt: weights.tauInt,
+                tauDeriv,
+                derivedTauDeriv: derivedTau,
                 grid: { ...gainsGrid.value },
             });
-            store.front = await scoreFront(store.settings.workdir, fit);
+            const front = await scoreFront(store.settings.workdir, fit);
+            store.front = front;
+            store.settings.weights = {
+                ...store.settings.weights,
+                sigmaRate: sigmaRate ?? front.sigma_rate,
+                tauDeriv: tauDeriv ?? front.tau_deriv,
+            };
             await refreshWorkspace();
         });
     }
