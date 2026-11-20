@@ -628,10 +628,17 @@
     "whippyflightWorkdir": { "message": "Working directory" },
     "whippyflightChoose": { "message": "Choose…" },
     "whippyflightPythonFound": { "message": "Python {{version}} with the required packages." },
-    "whippyflightPythonMissing": { "message": "Python could not be started." },
-    "whippyflightModulesMissing": {
-        "message": "Python {{version}} is missing packages: {{modules}}. Choose an interpreter they are installed in, such as a virtual environment's bin/python."
+    "whippyflightPythonMissing": {
+        "message": "Python could not be started. Install Python 3.11 or newer from python.org, then press Set up."
     },
+    "whippyflightModulesMissing": {
+        "message": "Python {{version}} is missing packages: {{modules}}. Press Set up to install them in an environment of their own, or choose an interpreter they are installed in."
+    },
+    "whippyflightSetupPython": { "message": "Set up" },
+    "whippyflightSetupPythonHint": {
+        "message": "Make a Python environment for WhippyFlight in the app's data folder, install its packages from PyPI, and use it. Needs Python 3.11 or newer, from python.org or Homebrew. Press again to reinstall."
+    },
+    "whippyflightBusy_setup": { "message": "Setting up Python…" },
     "whippyflightNoMatplotlib": {
         "message": "matplotlib is not installed, so plots can't be saved as images; the charts below still work."
     },

@@ -65,7 +65,7 @@ const PROBE_ATTEMPTS = 3;
 
 /** The pipeline step running, if any. */
 export type PipelineStep =
-    "pull" | "import" | "erase" | "scan" | "fit" | "gen" | "front" | "flicks" | "plots" | "upload";
+    "setup" | "pull" | "import" | "erase" | "scan" | "fit" | "gen" | "front" | "flicks" | "plots" | "upload";
 
 /**
  * Commit erases and programs the gain partition with MSP stalled; a NOR sector erase can take

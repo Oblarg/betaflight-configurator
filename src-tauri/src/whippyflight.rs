@@ -33,7 +33,7 @@ use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{InvokeBody, Request, Response};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use whippyflight_sim::units::{AngAccel, Angle, Freq, Millis, Rate, Time, Voltage};
 use whippyunits::api::rescale;
 use whippyunits::{qty, quantity, value};
@@ -151,7 +151,6 @@ const REQUIRED_MODULES: &[&str] = &[
     "numpy",
     "scipy",
     "control",
-    "frccontrol",
 ];
 
 #[derive(Default)]
@@ -801,46 +800,8 @@ pub async fn whippyflight_run(
     let slot = state.child.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut command = python_command(&toolchain);
-        command
-            .args(&args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let readers = {
-            let mut guard = slot.lock().unwrap();
-            if guard.is_some() {
-                return Err("a WhippyFlight job is already running".to_string());
-            }
-            let mut child = command
-                .spawn()
-                .map_err(|e| format!("could not start {}: {e}", toolchain.python))?;
-            let readers = [
-                forward(app.clone(), child.stdout.take().unwrap(), false),
-                forward(app.clone(), child.stderr.take().unwrap(), true),
-            ];
-            *guard = Some(child);
-            readers
-        };
-        let status = loop {
-            let mut guard = slot.lock().unwrap();
-            match guard.as_mut().map(Child::try_wait) {
-                Some(Ok(Some(status))) => {
-                    guard.take();
-                    break Ok(status);
-                }
-                Some(Ok(None)) => {}
-                Some(Err(e)) => {
-                    guard.take();
-                    break Err(e.to_string());
-                }
-                None => break Err("cancelled".to_string()),
-            }
-            drop(guard);
-            thread::sleep(std::time::Duration::from_millis(50));
-        };
-        for reader in readers {
-            let _ = reader.join();
-        }
-        let code = status?.code().unwrap_or(-1);
+        command.args(&args);
+        let code = run_streamed(&app, &slot, command, &toolchain.python)?;
         if code == 0 {
             after_job(&dir, &job)?;
         }
@@ -848,6 +809,216 @@ pub async fn whippyflight_run(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Run `command` in `slot` to completion, streaming its output; returns its exit code, or
+/// "cancelled" when `whippyflight_cancel` killed it. `program` names it in errors.
+fn run_streamed(
+    app: &AppHandle,
+    slot: &Arc<Mutex<Option<Child>>>,
+    mut command: Command,
+    program: &str,
+) -> Result<i32, String> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let readers = {
+        let mut guard = slot.lock().unwrap();
+        if guard.is_some() {
+            return Err("a WhippyFlight job is already running".to_string());
+        }
+        let mut child = command
+            .spawn()
+            .map_err(|e| format!("could not start {program}: {e}"))?;
+        let readers = [
+            forward(app.clone(), child.stdout.take().unwrap(), false),
+            forward(app.clone(), child.stderr.take().unwrap(), true),
+        ];
+        *guard = Some(child);
+        readers
+    };
+    let status = loop {
+        let mut guard = slot.lock().unwrap();
+        match guard.as_mut().map(Child::try_wait) {
+            Some(Ok(Some(status))) => {
+                guard.take();
+                break Ok(status);
+            }
+            Some(Ok(None)) => {}
+            Some(Err(e)) => {
+                guard.take();
+                break Err(e.to_string());
+            }
+            None => break Err("cancelled".to_string()),
+        }
+        drop(guard);
+        thread::sleep(std::time::Duration::from_millis(50));
+    };
+    for reader in readers {
+        let _ = reader.join();
+    }
+    Ok(status?.code().unwrap_or(-1))
+}
+
+/// The directory, in the app's data directory, of the Python environment `whippyflight_setup_python` makes.
+const PYTHON_ENV_DIR: &str = "whippyflight-python";
+/// What that environment installs from PyPI: the Betaflight tools, which pull in the gain tools,
+/// with their plots.
+const PYTHON_PACKAGES: &[&str] = &["whippyflight-betaflight[plots]==0.1.0"];
+/// The oldest Python the packages support.
+const PYTHON_MIN: (u32, u32) = (3, 11);
+
+/// A virtual environment's interpreter.
+fn venv_python(env: &Path) -> PathBuf {
+    if cfg!(windows) {
+        env.join("Scripts").join("python.exe")
+    } else {
+        env.join("bin").join("python3")
+    }
+}
+
+/// Interpreters to make the environment from, as (program, arguments), most likely first: the
+/// configured one, then the usual installs by path. Apps started from the Finder don't get the
+/// shell's PATH, and macOS's own python3 is older than PYTHON_MIN (and offers to install the
+/// command line tools when they're missing), so on macOS only paths are tried.
+fn base_pythons(configured: &str) -> Vec<(String, Vec<String>)> {
+    let minors = (PYTHON_MIN.1..=PYTHON_MIN.1 + 4).rev();
+    let mut found: Vec<(String, Vec<String>)> = vec![];
+    let mut add = |program: String, args: &[&str]| {
+        let entry = (program, args.iter().map(|a| a.to_string()).collect());
+        if !found.contains(&entry) {
+            found.push(entry);
+        }
+    };
+    let configured_ok = !cfg!(target_os = "macos") || Path::new(configured).is_absolute();
+    if !configured.is_empty() && configured_ok && configured != "/usr/bin/python3" {
+        add(configured.to_string(), &[]);
+    }
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+    if cfg!(windows) {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            for minor in minors.clone() {
+                let exe = local.join(format!("Programs/Python/Python3{minor}/python.exe"));
+                add(exe.to_string_lossy().into_owned(), &[]);
+            }
+        }
+        add("py".into(), &["-3"]);
+        add("python".into(), &[]);
+        add("python3".into(), &[]);
+        return found;
+    }
+    let mut dirs: Vec<PathBuf> = vec![];
+    if cfg!(target_os = "macos") {
+        dirs.push("/opt/homebrew/bin".into());
+        for minor in minors.clone() {
+            dirs.push(format!("/Library/Frameworks/Python.framework/Versions/3.{minor}/bin").into());
+        }
+    }
+    dirs.push("/usr/local/bin".into());
+    if let Some(home) = &home {
+        dirs.push(home.join(".pyenv/shims"));
+        dirs.push(home.join(".local/bin"));
+    }
+    if !cfg!(target_os = "macos") {
+        dirs.push("/usr/bin".into());
+    }
+    for dir in &dirs {
+        for minor in minors.clone() {
+            add(dir.join(format!("python3.{minor}")).to_string_lossy().into_owned(), &[]);
+        }
+        add(dir.join("python3").to_string_lossy().into_owned(), &[]);
+    }
+    if !cfg!(target_os = "macos") {
+        add("python3".into(), &[]);
+    }
+    found
+}
+
+/// The first of `candidates` at least PYTHON_MIN, as (version, its interpreter's absolute path);
+/// else what was found instead.
+fn pick_base_python(candidates: &[(String, Vec<String>)]) -> Result<(String, String), String> {
+    let probe = "import sys; print(sys.version_info[0], sys.version_info[1], sys.version.split()[0], sys.executable)";
+    let mut seen = vec![];
+    for (program, args) in candidates {
+        if Path::new(program).is_absolute() && !Path::new(program).is_file() {
+            continue;
+        }
+        let Ok(output) = Command::new(program).args(args).args(["-c", probe]).stdin(Stdio::null()).output()
+        else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut words = text.trim().splitn(4, ' ');
+        let (Some(major), Some(minor), Some(version), Some(exe)) = (words.next(), words.next(), words.next(), words.next())
+        else {
+            continue;
+        };
+        let (Ok(major), Ok(minor)) = (major.parse::<u32>(), minor.parse::<u32>()) else {
+            continue;
+        };
+        if (major, minor) >= PYTHON_MIN {
+            return Ok((version.to_string(), exe.to_string()));
+        }
+        seen.push(format!("{version} ({exe})"));
+    }
+    let (major, minor) = PYTHON_MIN;
+    Err(if seen.is_empty() {
+        format!("Python {major}.{minor} or newer was not found; install it from python.org")
+    } else {
+        format!("Python {major}.{minor} or newer was not found, only {}; install it from python.org", seen.join(", "))
+    })
+}
+
+/// Make a Python environment for the pipeline in the app's data directory and install the
+/// whippyflight packages in it from PyPI; resolves with its interpreter. `python` is the
+/// configured interpreter, tried first as the environment's base.
+#[tauri::command]
+pub async fn whippyflight_setup_python(
+    app: AppHandle,
+    state: State<'_, WhippyFlightState>,
+    python: String,
+) -> Result<String, String> {
+    let env = app.path().app_data_dir().map_err(|e| e.to_string())?.join(PYTHON_ENV_DIR);
+    let slot = state.child.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let say = |line: String| {
+            let _ = app.emit("whippyflight-output", OutputLine { line, stderr: false });
+        };
+        let (version, base) = pick_base_python(&base_pythons(&python))?;
+        say(format!("Python {version}: {base}"));
+        say(format!("Environment: {}", env.display()));
+        let interpreter = venv_python(&env).to_string_lossy().into_owned();
+        let steps = [
+            ("making the environment", &base, vec!["-m".into(), "venv".into(), "--clear".into(),
+                                                   env.to_string_lossy().into_owned()]),
+            ("updating pip", &interpreter, pip_args(&["--upgrade", "pip"])),
+            ("installing the packages", &interpreter, pip_args(PYTHON_PACKAGES)),
+        ];
+        for (what, program, args) in steps {
+            let mut command = Command::new(program);
+            command
+                .args(&args)
+                .env("PYTHONUNBUFFERED", "1")
+                .env_remove("PYTHONPATH")
+                .env_remove("PYTHONHOME")
+                .env_remove("PIP_USER")
+                .stdin(Stdio::null());
+            let code = run_streamed(&app, &slot, command, program)?;
+            if code != 0 {
+                return Err(format!("{what} failed (exit code {code})"));
+            }
+        }
+        Ok(interpreter)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// `pip install` arguments for `packages`.
+fn pip_args(packages: &[&str]) -> Vec<String> {
+    ["-m", "pip", "install", "--disable-pip-version-check"]
+        .iter()
+        .chain(packages)
+        .map(|a| a.to_string())
+        .collect()
 }
 
 /// Kill the running job, if any; its `whippyflight_run` rejects with "cancelled".
@@ -1974,6 +2145,41 @@ mod tests {
             dir.join("fits/a/plots")
         );
         assert!(reveal_path(dir, Some("fits/..")).is_err());
+    }
+
+    #[test]
+    fn tries_configured_python_first() {
+        let candidates = base_pythons("/opt/py/bin/python3");
+        assert_eq!(candidates[0], ("/opt/py/bin/python3".to_string(), vec![]));
+        assert!(!candidates.iter().any(|(program, _)| program == "/usr/bin/python3" && cfg!(target_os = "macos")));
+        if cfg!(target_os = "macos") {
+            assert!(base_pythons("python3").iter().all(|(program, _)| Path::new(program).is_absolute()));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn picks_the_first_new_enough_python() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("whippyflight-pythons-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = |name: &str, says: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\necho '{says}'\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            (path.to_string_lossy().into_owned(), vec![])
+        };
+        let old = fake("old", "3 9 3.9.6 /old/python3");
+        let new = fake("new", "3 12 3.12.4 /new/python3");
+        let missing = (dir.join("missing").to_string_lossy().into_owned(), vec![]);
+        assert_eq!(
+            pick_base_python(&[missing.clone(), old.clone(), new]).unwrap(),
+            ("3.12.4".to_string(), "/new/python3".to_string())
+        );
+        let error = pick_base_python(&[missing, old]).unwrap_err();
+        assert!(error.contains("3.9.6 (/old/python3)"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

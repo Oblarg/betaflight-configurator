@@ -198,6 +198,20 @@ export function checkEnv(toolchain: Toolchain): Promise<EnvReport> {
     return invoke<EnvReport>("whippyflight_check_env", { toolchain });
 }
 
+/**
+ * Make a Python environment with the whippyflight packages in the app's data directory, from
+ * PyPI, streaming the installers' output to `onOutput`; `python` is tried first as its base.
+ * @returns the environment's interpreter
+ */
+export async function setupPython(python: string, onOutput: (line: OutputLine) => void): Promise<string> {
+    const unlisten: UnlistenFn = await listen<OutputLine>("whippyflight-output", (event) => onOutput(event.payload));
+    try {
+        return await invoke<string>("whippyflight_setup_python", { python });
+    } finally {
+        unlisten();
+    }
+}
+
 /** @returns the working directory's contents */
 export function readWorkspace(workdir: string): Promise<Workspace> {
     return invoke<Workspace>("whippyflight_workspace", { workdir });

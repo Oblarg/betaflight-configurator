@@ -46,6 +46,7 @@ import {
     readWorkspace,
     reveal,
     runJob,
+    setupPython as setupPythonEnv,
     writeFile,
     type Grid,
     type Job,
@@ -110,6 +111,8 @@ export interface WhippyFlightPipeline {
     unscanned: ComputedRef<string[]>;
     chooseWorkdir: () => Promise<void>;
     checkEnvironment: () => Promise<void>;
+    /** Make a Python environment with the packages, from PyPI, and use its interpreter. */
+    setupPython: () => Promise<void>;
     refreshWorkspace: () => Promise<void>;
     refreshFlash: () => Promise<void>;
     pullLogs: () => Promise<void>;
@@ -303,6 +306,15 @@ export function useWhippyFlightPipeline(): WhippyFlightPipeline {
             return;
         }
         store.env = await checkEnv(toolchain());
+    }
+
+    async function setupPython(): Promise<void> {
+        await step("setup", async () => {
+            store.output = [];
+            store.settings.python = await setupPythonEnv(store.settings.python, store.appendOutput);
+            await checkEnvironment();
+        });
+        await scanLogs();
     }
 
     async function chooseWorkdir(): Promise<void> {
@@ -624,7 +636,7 @@ export function useWhippyFlightPipeline(): WhippyFlightPipeline {
     }
 
     async function cancel(): Promise<void> {
-        if (["scan", "fit", "gen", "front", "flicks", "plots"].includes(store.busy ?? "")) {
+        if (["setup", "scan", "fit", "gen", "front", "flicks", "plots"].includes(store.busy ?? "")) {
             await cancelJob();
         } else if (store.busy === "erase") {
             dataflashErase.cancel();
@@ -668,6 +680,7 @@ export function useWhippyFlightPipeline(): WhippyFlightPipeline {
         unscanned,
         chooseWorkdir,
         checkEnvironment,
+        setupPython,
         refreshWorkspace,
         refreshFlash,
         pullLogs,

@@ -34,7 +34,15 @@
                     <div class="grid grid-cols-[9rem_1fr_auto] items-center gap-2 text-sm">
                         <span class="text-dimmed">{{ $t("whippyflightPython") }}</span>
                         <UInput v-model="store.settings.python" size="xs" class="font-mono" @change="checkEnv" />
-                        <span></span>
+                        <UButton
+                            size="xs"
+                            :variant="pipeline.toolchainReady.value ? 'outline' : 'solid'"
+                            :label="$t('whippyflightSetupPython')"
+                            :title="$t('whippyflightSetupPythonHint')"
+                            :disabled="!!store.busy && store.busy !== 'setup'"
+                            :loading="store.busy === 'setup'"
+                            @click="pipeline.setupPython"
+                        />
 
                         <span class="text-dimmed">{{ $t("whippyflightWorkdir") }}</span>
                         <span class="font-mono text-xs truncate">{{ store.settings.workdir || "–" }}</span>
@@ -401,7 +409,7 @@
                 <span v-if="store.error" class="text-error grow">{{ store.error }}</span>
                 <span v-else class="text-dimmed grow">{{ $t(`whippyflightBusy_${store.busy}`) }}</span>
                 <UButton
-                    v-if="['scan', 'fit', 'gen', 'flicks', 'erase'].includes(store.busy ?? '')"
+                    v-if="['setup', 'scan', 'fit', 'gen', 'flicks', 'erase'].includes(store.busy ?? '')"
                     size="xs"
                     variant="outline"
                     :label="$t('whippyflightCancel')"

@@ -52,6 +52,10 @@ vi.mock("../../src/js/whippyflight/pipeline", async (importOriginal) => {
     return {
         ...actual,
         checkEnv: vi.fn(),
+        setupPython: vi.fn(async (_python: string, onOutput: (line: { line: string; stderr: boolean }) => void) => {
+            onOutput({ line: "Python 3.12.4: /usr/local/bin/python3", stderr: false });
+            return "/data/whippyflight-python/bin/python3";
+        }),
         readWorkspace: vi.fn(async (): Promise<Workspace> => ({
             logs: disk.logs.map(({ name, size }) => ({ name, size })),
             hasFlightIndex: !!disk.index,
@@ -242,6 +246,38 @@ describe("WhippyFlight pipeline flight selection", () => {
             ["b.bbl"],
         ]);
         expect(store.selectedFlights).toEqual(["b.bbl#1"]);
+        expect(pipeline.currentStep.value).toBe("fit");
+    });
+
+    it("sets up Python in an environment of its own and uses it", async () => {
+        const { store, pipeline } = setup();
+        store.env = { pythonVersion: "3.12", missingModules: ["whippyflight"], hasMatplotlib: false };
+        await pipeline.refreshWorkspace();
+        expect(pipeline.currentStep.value).toBe("setup");
+
+        // A failed install keeps pip's output to read.
+        vi.mocked(pipelineIo.setupPython).mockImplementationOnce(async (_python, onOutput) => {
+            onOutput({ line: "ERROR: No matching distribution", stderr: true });
+            throw "installing the packages failed (exit code 1)";
+        });
+        await pipeline.setupPython();
+        expect(store.error).toBe("installing the packages failed (exit code 1)");
+        expect(store.output.map((l) => l.line)).toEqual(["ERROR: No matching distribution"]);
+        expect(store.settings.python).toBe("python3");
+        expect(disk.jobs).toEqual([]);
+
+        vi.mocked(pipelineIo.checkEnv).mockResolvedValueOnce({
+            pythonVersion: "3.12",
+            missingModules: [],
+            hasMatplotlib: true,
+        });
+        await pipeline.setupPython();
+        expect(pipelineIo.setupPython).toHaveBeenLastCalledWith("python3", expect.any(Function));
+        expect(store.error).toBe("");
+        expect(store.settings.python).toBe("/data/whippyflight-python/bin/python3");
+        expect(pipelineIo.checkEnv).toHaveBeenLastCalledWith({ python: "/data/whippyflight-python/bin/python3" });
+        // With the packages in place, the logs are read.
+        expect(disk.jobs.map((j) => j.kind)).toEqual(["scan"]);
         expect(pipeline.currentStep.value).toBe("fit");
     });
 
