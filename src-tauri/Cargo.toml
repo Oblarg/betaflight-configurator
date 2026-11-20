@@ -41,10 +41,9 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 
 # The WhippyFlight controller and its nonlinear plant, to fly computed gains through
-# stick flicks before they are uploaded (src/whippyflight.rs). A path dependency on a
-# whippyflight checkout next to this one, until the crates are published.
-whippyflight-control = { path = "../../whippyflight/crates/whippyflight-control", features = ["std"] }
-whippyflight-sim = { path = "../../whippyflight/crates/whippyflight-sim" }
+# stick flicks before they are uploaded (src/whippyflight.rs).
+whippyflight-control = { version = "0.1.0", features = ["std"] }
+whippyflight-sim = "0.1.0"
 whippyunits = "0.3.5"
 
 # Browses the bridge's `_betaflight._tcp` mDNS service so bridges appear in the connect list
